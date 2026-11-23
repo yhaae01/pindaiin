@@ -35,14 +35,21 @@ class FileAccessService {
     List<String>? allowedExtensions,
     bool allowMultiple = true,
   }) async {
-    final result = await FilePicker.platform.pickFiles(
-      allowMultiple: allowMultiple,
-      type: allowedExtensions == null ? FileType.any : FileType.custom,
+    final type = allowedExtensions == null ? FileType.any : FileType.custom;
+    if (allowMultiple) {
+      final files = await FilePicker.pickFiles(
+        type: type,
+        allowedExtensions: allowedExtensions,
+      );
+      return files.map((file) => file.path).whereType<String>().toList();
+    }
+
+    final file = await FilePicker.pickFile(
+      type: type,
       allowedExtensions: allowedExtensions,
-      withData: false,
     );
-    if (result == null) return const [];
-    return result.files.map((file) => file.path).whereType<String>().toList();
+    final path = file?.path;
+    return path == null ? const [] : [path];
   }
 
   Future<void> shareFiles(List<String> paths, {String? subject}) async {

@@ -64,9 +64,9 @@ class _ScanSessionScreenState extends State<ScanSessionScreen> {
       canPop: _controller.isEmpty,
       onPopInvokedWithResult: (didPop, result) async {
         if (didPop) return;
-        if (await _confirmDiscard() && mounted) {
-          Navigator.of(context).pop();
-        }
+        final discard = await _confirmDiscard();
+        if (!discard || !context.mounted) return;
+        Navigator.of(context).pop();
       },
       child: AnimatedBuilder(
         animation: _controller,
@@ -150,7 +150,7 @@ class _ScanSessionScreenState extends State<ScanSessionScreen> {
                         child: ListView.separated(
                           scrollDirection: Axis.horizontal,
                           itemCount: pages.length,
-                          separatorBuilder: (_, __) => const SizedBox(width: 8),
+                          separatorBuilder: (_, _) => const SizedBox(width: 8),
                           itemBuilder: (context, index) => PageThumbnail(
                             page: pages[index],
                             index: index,

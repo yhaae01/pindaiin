@@ -1,4 +1,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Only used by the optional Office conversion backend. Scans, image/PDF
+         conversions and file management stay fully offline. -->
+    <uses-permission android:name="android.permission.INTERNET"/>
     <application
         android:label="Pindaiin"
         android:name="${applicationName}"

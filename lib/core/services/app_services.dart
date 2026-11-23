@@ -10,7 +10,10 @@ import 'file_access_service.dart';
 import 'file_repository.dart';
 import 'file_storage_service.dart';
 import 'image_processor.dart';
-import 'office_converter.dart';
+import 'office/mock_office_conversion_repository.dart';
+import 'office/office_conversion_repository.dart';
+import 'office/repository_office_converter.dart';
+import 'office/rest_office_conversion_repository.dart';
 import 'pdf_converter.dart';
 
 /// Composition root: wires directories, storage, persistence and converters
@@ -34,6 +37,12 @@ class AppServices {
   final PdfConverter pdf;
   final DocumentConverterService converter;
 
+  /// `--dart-define=OFFICE_API_URL=https://convert.example.com` switches from
+  /// the mock to a real backend. `OFFICE_API_KEY` is optional and sent as a
+  /// Bearer token.
+  static const officeApiUrl = String.fromEnvironment('OFFICE_API_URL');
+  static const officeApiKey = String.fromEnvironment('OFFICE_API_KEY');
+
   static Future<AppServices> bootstrap() async {
     final directories = await AppDirectories.create();
     final storage = FileStorageService();
@@ -41,7 +50,13 @@ class AppServices {
     await repository.open();
 
     final pdf = LocalPdfConverter(storage: storage);
-    final office = const UnavailableOfficeConverter();
+    final OfficeConversionRepository officeRepository = officeApiUrl.isEmpty
+        ? MockOfficeConversionRepository()
+        : RestOfficeConversionRepository(
+            baseUrl: officeApiUrl,
+            apiKey: officeApiKey.isEmpty ? null : officeApiKey,
+          );
+    final office = RepositoryOfficeConverter(repository: officeRepository);
 
     return AppServices._(
       directories: directories,

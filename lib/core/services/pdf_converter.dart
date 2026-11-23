@@ -39,9 +39,9 @@ abstract class PdfConverter {
 }
 
 class LocalPdfConverter implements PdfConverter {
-  LocalPdfConverter({required FileStorageService storage}) : _storage = storage;
+  LocalPdfConverter({required this.storage});
 
-  final FileStorageService _storage;
+  final FileStorageService storage;
 
   @override
   Future<String> bytesToPdf({
@@ -153,7 +153,7 @@ class LocalPdfConverter implements PdfConverter {
           }
 
           final name = '$base-page-${index.toString().padLeft(2, '0')}.jpg';
-          final path = await _storage.writeBytes(
+          final path = await storage.writeBytes(
             directory: outputDir,
             fileName: name,
             bytes: rendered.bytes,

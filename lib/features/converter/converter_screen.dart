@@ -6,6 +6,7 @@ import '../../core/models/scanned_file.dart';
 import '../../core/services/file_repository.dart';
 import '../../core/utils/formatters.dart';
 import '../../core/widgets/status_views.dart';
+import '../files/file_preview_screen.dart';
 import 'converter_controller.dart';
 
 /// Converter tab. Images ↔ PDF work fully offline; Office → PDF is routed
@@ -111,11 +112,12 @@ class ConverterScreen extends StatelessWidget {
                   color: scheme.onSurfaceVariant,
                 ),
               ),
-              if (controller.mode == ConversionMode.officeToPdf &&
-                  !controller.isOfficeAvailable) ...[
+              if (controller.mode.isOffice) ...[
                 const SizedBox(height: 16),
                 _NoticeCard(
-                  icon: Icons.cloud_off_outlined,
+                  icon: controller.officeIsDemo
+                      ? Icons.science_outlined
+                      : Icons.cloud_done_outlined,
                   message: controller.officeNote,
                 ),
               ],
@@ -174,11 +176,7 @@ class ConverterScreen extends StatelessWidget {
                         const SizedBox(width: 10),
                         Expanded(
                           child: OutlinedButton.icon(
-                            onPressed: controller.mode ==
-                                        ConversionMode.officeToPdf &&
-                                    !controller.isOfficeAvailable
-                                ? null
-                                : controller.isBusy
+                            onPressed: controller.isBusy
                                 ? null
                                 : () => _pickHistory(context, controller, repository),
                             icon: const Icon(Icons.history),
@@ -211,8 +209,7 @@ class ConverterScreen extends StatelessWidget {
                 onPressed:
                     controller.inputs.isEmpty ||
                         controller.isBusy ||
-                        (controller.mode == ConversionMode.officeToPdf &&
-                            !controller.isOfficeAvailable)
+                        (controller.mode.isOffice && !controller.isOfficeAvailable)
                     ? null
                     : controller.convert,
                 icon: const Icon(Icons.play_arrow_rounded),
@@ -224,15 +221,19 @@ class ConverterScreen extends StatelessWidget {
                   outputs: controller.outputs,
                   onShare: controller.shareOutputs,
                   onOpenFiles: onOpenFiles,
+                  onPreview: () => Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (_) =>
+                          FilePreviewScreen(file: controller.outputs.first),
+                    ),
+                  ),
                 ),
               ],
             ],
           ),
           if (controller.isBusy)
             BusyOverlay(
-              message: controller.mode == ConversionMode.pdfToImages
-                  ? 'Rendering pages…'
-                  : 'Converting…',
+              message: controller.statusText ?? 'Converting…',
               progress: controller.progress,
             ),
         ],
@@ -247,20 +248,29 @@ String _modeDescription(ConversionMode mode) => switch (mode) {
   ConversionMode.pdfToImages =>
     'Render every page of a PDF as a JPG. Runs on this device.',
   ConversionMode.officeToPdf =>
-    'DOCX and XLSX files need a server-side renderer; images ↔ PDF work '
-        'offline.',
+    'Upload DOCX or XLSX and download a rendered PDF. Requires the conversion '
+        'service.',
+  ConversionMode.pdfToWord =>
+    'Upload a PDF and download an editable Word document. Requires the '
+        'conversion service.',
+  ConversionMode.pdfToExcel =>
+    'Upload a PDF and download an Excel workbook. Requires the conversion '
+        'service.',
 };
 
 String _acceptedHint(ConversionMode mode) => switch (mode) {
   ConversionMode.imagesToPdf => 'Accepts JPG, PNG and WebP.',
   ConversionMode.pdfToImages => 'Choose one PDF.',
   ConversionMode.officeToPdf => 'Accepts DOC, DOCX, XLS and XLSX.',
+  ConversionMode.pdfToWord || ConversionMode.pdfToExcel => 'Choose one PDF.',
 };
 
 String _actionLabel(ConversionMode mode) => switch (mode) {
   ConversionMode.imagesToPdf => 'Convert to PDF',
   ConversionMode.pdfToImages => 'Convert to images',
   ConversionMode.officeToPdf => 'Convert to PDF',
+  ConversionMode.pdfToWord => 'Convert to Word',
+  ConversionMode.pdfToExcel => 'Convert to Excel',
 };
 
 class _SectionCard extends StatelessWidget {
@@ -326,11 +336,13 @@ class _ResultCard extends StatelessWidget {
     required this.outputs,
     required this.onShare,
     required this.onOpenFiles,
+    required this.onPreview,
   });
 
   final List<ScannedFile> outputs;
   final Future<void> Function() onShare;
   final VoidCallback onOpenFiles;
+  final VoidCallback onPreview;
 
   @override
   Widget build(BuildContext context) {
@@ -376,14 +388,20 @@ class _ResultCard extends StatelessWidget {
               style: TextStyle(color: scheme.onPrimaryContainer),
             ),
           const SizedBox(height: 10),
-          Row(
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
             children: [
+              OutlinedButton.icon(
+                onPressed: onPreview,
+                icon: const Icon(Icons.visibility_outlined),
+                label: const Text('Open'),
+              ),
               OutlinedButton.icon(
                 onPressed: onShare,
                 icon: const Icon(Icons.share_outlined),
                 label: const Text('Share'),
               ),
-              const SizedBox(width: 10),
               FilledButton.tonalIcon(
                 onPressed: onOpenFiles,
                 icon: const Icon(Icons.folder_outlined),

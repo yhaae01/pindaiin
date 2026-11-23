@@ -14,25 +14,28 @@ import 'pdf_converter.dart';
 /// Office files never touches the widgets.
 class DocumentConverterService {
   DocumentConverterService({
-    required PdfConverter pdf,
-    required OfficeConverter office,
-  }) : _pdf = pdf,
-       _office = office;
+    required this.pdf,
+    required this.office,
+  });
 
-  final PdfConverter _pdf;
-  final OfficeConverter _office;
+  final PdfConverter pdf;
+  final OfficeConverter office;
   final Uuid _uuid = const Uuid();
 
-  bool get isOfficeAvailable => _office.isAvailable;
+  bool get isOfficeAvailable => office.isAvailable;
 
-  String get officeNote => _office.availabilityNote;
+  bool get isOfficeDemo => office.isDemo;
+
+  String get officeNote => office.availabilityNote;
+
+  String get officeBackendLabel => office.backendLabel;
 
   Future<ConversionResult> convert({
     required ConversionMode mode,
     required List<String> inputPaths,
     required PdfQuality quality,
     required Directory outputDir,
-    void Function(double progress)? onProgress,
+    void Function(ConversionProgress progress)? onProgress,
   }) async {
     if (inputPaths.isEmpty) {
       throw const ConversionException('Choose at least one file to convert.');
@@ -45,11 +48,13 @@ class DocumentConverterService {
           outputDir.path,
           'converted_${Formatters.fileStamp(DateTime.now())}.pdf',
         );
-        final path = await _pdf.imagesToPdf(
+        final path = await pdf.imagesToPdf(
           imagePaths: inputPaths,
           outputPath: outputPath,
           quality: quality,
-          onProgress: onProgress,
+          onProgress: (fraction) => onProgress?.call(
+            ConversionProgress(0.8 * fraction, 'Building PDF…'),
+          ),
         );
         return ConversionResult(
           artifacts: [
@@ -66,35 +71,71 @@ class DocumentConverterService {
           throw const ConversionException('Choose a single PDF to convert.');
         }
         _requireAll(inputPaths, const {FileKind.pdf});
-        final artifacts = await _pdf.pdfToImages(
+        final artifacts = await pdf.pdfToImages(
           pdfPath: inputPaths.first,
           outputDir: outputDir,
           quality: quality,
-          onProgress: onProgress,
+          onProgress: (fraction) => onProgress?.call(
+            ConversionProgress(fraction, 'Rendering pages…'),
+          ),
         );
         return ConversionResult(artifacts: artifacts);
 
       case ConversionMode.officeToPdf:
-        if (!_office.isAvailable) {
-          throw UnsupportedConversionException(_office.availabilityNote);
-        }
-        _requireAll(inputPaths, const {FileKind.document, FileKind.spreadsheet});
-        final artifacts = <ConversionArtifact>[];
-        for (var index = 0; index < inputPaths.length; index++) {
-          final input = inputPaths[index];
-          final name =
-              '${Formatters.baseName(p.basename(input))}_${_uuid.v4().substring(0, 8)}.pdf';
-          artifacts.add(
-            await _office.convertToPdf(
-              inputPath: input,
-              outputPath: p.join(outputDir.path, name),
-              onProgress: (progress) =>
-                  onProgress?.call((index + progress) / inputPaths.length),
-            ),
-          );
-        }
-        return ConversionResult(artifacts: artifacts);
+      case ConversionMode.pdfToWord:
+      case ConversionMode.pdfToExcel:
+        return _convertOffice(
+          mode: mode,
+          inputPaths: inputPaths,
+          outputDir: outputDir,
+          onProgress: onProgress,
+        );
     }
+  }
+
+  Future<ConversionResult> _convertOffice({
+    required ConversionMode mode,
+    required List<String> inputPaths,
+    required Directory outputDir,
+    void Function(ConversionProgress progress)? onProgress,
+  }) async {
+    final target = mode.officeTarget!;
+
+    if (!office.isAvailable) {
+      throw UnsupportedConversionException(office.availabilityNote);
+    }
+
+    if (target == OfficeTarget.pdf) {
+      _requireAll(inputPaths, const {FileKind.document, FileKind.spreadsheet});
+    } else {
+      _requireAll(inputPaths, const {FileKind.pdf});
+    }
+
+    final artifacts = <ConversionArtifact>[];
+    for (var index = 0; index < inputPaths.length; index++) {
+      final input = inputPaths[index];
+      final name =
+          '${Formatters.baseName(p.basename(input))}_${_uuid.v4().substring(0, 8)}.${target.extension}';
+
+      artifacts.add(
+        await office.convert(
+          inputPath: input,
+          outputPath: p.join(outputDir.path, name),
+          target: target,
+          onProgress: (event) {
+            final withinFile = event.fraction ?? 0;
+            onProgress?.call(
+              ConversionProgress(
+                (index + withinFile) / inputPaths.length,
+                event.stage.label,
+              ),
+            );
+          },
+        ),
+      );
+    }
+
+    return ConversionResult(artifacts: artifacts);
   }
 
   void _requireAll(List<String> paths, Set<FileKind> allowed) {

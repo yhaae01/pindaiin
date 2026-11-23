@@ -8,15 +8,16 @@ import '../../core/services/file_access_service.dart';
 /// Drives the converter UI: source selection, mode/quality and the conversion
 /// itself. All heavy lifting stays behind [DocumentConverterService].
 class ConverterController extends ChangeNotifier {
-  ConverterController({required AppServices services}) : _services = services;
+  ConverterController({required this.services});
 
-  final AppServices _services;
+  final AppServices services;
 
   ConversionMode _mode = ConversionMode.imagesToPdf;
   final List<String> _inputs = [];
   PdfQuality _quality = PdfQuality.balanced;
   bool _busy = false;
   double? _progress;
+  String? _status;
   String? _error;
   List<ScannedFile> _outputs = [];
 
@@ -25,18 +26,26 @@ class ConverterController extends ChangeNotifier {
   PdfQuality get quality => _quality;
   bool get isBusy => _busy;
   double? get progress => _progress;
+
+  /// Stage label reported by the conversion service ("Uploading…").
+  String? get statusText => _status;
   String? get error => _error;
   List<ScannedFile> get outputs => List.unmodifiable(_outputs);
-  bool get isOfficeAvailable => _services.converter.isOfficeAvailable;
-  String get officeNote => _services.converter.officeNote;
+  bool get isOfficeAvailable => services.converter.isOfficeAvailable;
+  bool get officeIsDemo => services.converter.isOfficeDemo;
+  String get officeNote => services.converter.officeNote;
 
   /// Whether the current mode accepts more than one file.
-  bool get allowsMultiple => _mode != ConversionMode.pdfToImages;
+  bool get allowsMultiple => switch (_mode) {
+    ConversionMode.imagesToPdf => true,
+    ConversionMode.officeToPdf => true,
+    _ => false,
+  };
 
   List<String> get _allowedExtensions => switch (_mode) {
     ConversionMode.imagesToPdf => FileAccessService.imageExtensions,
-    ConversionMode.pdfToImages => const ['pdf'],
     ConversionMode.officeToPdf => const ['doc', 'docx', 'xls', 'xlsx'],
+    _ => const ['pdf'],
   };
 
   void setMode(ConversionMode mode) {
@@ -46,6 +55,7 @@ class ConverterController extends ChangeNotifier {
     _outputs = [];
     _error = null;
     _progress = null;
+    _status = null;
     notifyListeners();
   }
 
@@ -61,7 +71,7 @@ class ConverterController extends ChangeNotifier {
 
   Future<void> pickFromDevice() async {
     try {
-      final paths = await _services.fileAccess.pickFiles(
+      final paths = await services.fileAccess.pickFiles(
         allowedExtensions: _allowedExtensions,
         allowMultiple: allowsMultiple,
       );
@@ -102,7 +112,7 @@ class ConverterController extends ChangeNotifier {
       notifyListeners();
       return;
     }
-    if (_mode == ConversionMode.officeToPdf && !isOfficeAvailable) {
+    if (_mode.isOffice && !isOfficeAvailable) {
       _error = officeNote;
       notifyListeners();
       return;
@@ -110,18 +120,20 @@ class ConverterController extends ChangeNotifier {
 
     _busy = true;
     _progress = 0;
+    _status = null;
     _error = null;
     _outputs = [];
     notifyListeners();
 
     try {
-      final result = await _services.converter.convert(
+      final result = await services.converter.convert(
         mode: _mode,
         inputPaths: List.of(_inputs),
         quality: _quality,
-        outputDir: _services.directories.exports,
-        onProgress: (value) {
-          _progress = value;
+        outputDir: services.directories.exports,
+        onProgress: (progress) {
+          _progress = progress.fraction;
+          _status = progress.label;
           notifyListeners();
         },
       );
@@ -129,7 +141,7 @@ class ConverterController extends ChangeNotifier {
       final registered = <ScannedFile>[];
       for (final artifact in result.artifacts) {
         registered.add(
-          await _services.registerFile(
+          await services.registerFile(
             path: artifact.path,
             origin: FileOrigin.conversion,
             pageCount: artifact.pageCount,
@@ -143,13 +155,14 @@ class ConverterController extends ChangeNotifier {
     } finally {
       _busy = false;
       _progress = null;
+      _status = null;
       notifyListeners();
     }
   }
 
   Future<void> shareOutputs() async {
     if (_outputs.isEmpty) return;
-    await _services.fileAccess.shareFiles(
+    await services.fileAccess.shareFiles(
       _outputs.map((file) => file.path).toList(growable: false),
       subject: _outputs.first.name,
     );
@@ -162,9 +175,9 @@ class ConverterController extends ChangeNotifier {
 
   bool _accepts(FileKind kind) => switch (_mode) {
     ConversionMode.imagesToPdf => kind == FileKind.image,
-    ConversionMode.pdfToImages => kind == FileKind.pdf,
     ConversionMode.officeToPdf =>
       kind == FileKind.document || kind == FileKind.spreadsheet,
+    _ => kind == FileKind.pdf,
   };
 
   void _setInputs(List<String> paths) {

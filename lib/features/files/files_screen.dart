@@ -123,7 +123,7 @@ class _FilesScreenState extends State<FilesScreen> {
                 : ListView.separated(
                     padding: const EdgeInsets.fromLTRB(16, 0, 16, 96),
                     itemCount: files.length,
-                    separatorBuilder: (_, __) => const SizedBox(height: 8),
+                    separatorBuilder: (_, _) => const SizedBox(height: 8),
                     itemBuilder: (context, index) => _FileTile(
                       file: files[index],
                       controller: controller,

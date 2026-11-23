@@ -214,7 +214,7 @@ class _BatchEditorScreenState extends State<BatchEditorScreen> {
                         padding: const EdgeInsets.symmetric(horizontal: 12),
                         buildDefaultDragHandles: count > 1,
                         itemCount: count,
-                        onReorder: _controller.reorder,
+                        onReorderItem: _controller.reorder,
                         proxyDecorator: (child, index, animation) =>
                             Material(color: Colors.transparent, child: child),
                         itemBuilder: (context, index) {

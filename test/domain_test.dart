@@ -1,10 +1,17 @@
 import 'dart:convert';
+import 'dart:io';
 import 'dart:ui';
 
+import 'package:archive/archive.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:pindaiin/core/models/conversion.dart';
 import 'package:pindaiin/core/models/scan_page.dart';
 import 'package:pindaiin/core/models/scanned_file.dart';
 import 'package:pindaiin/core/services/file_storage_service.dart';
+import 'package:pindaiin/core/services/office/mock_office_conversion_repository.dart';
+import 'package:pindaiin/core/services/office/office_conversion_models.dart';
+import 'package:pindaiin/core/services/office/office_conversion_repository.dart';
+import 'package:pindaiin/core/services/office/repository_office_converter.dart';
 
 void main() {
   group('ScanPage rotation', () {
@@ -120,6 +127,153 @@ void main() {
     });
   });
 
+  group('Office targets', () {
+    test('accept only their supported source formats', () {
+      expect(OfficeTarget.pdf.acceptsPath('/tmp/a.docx'), isTrue);
+      expect(OfficeTarget.pdf.acceptsPath('/tmp/a.xlsx'), isTrue);
+      expect(OfficeTarget.pdf.acceptsPath('/tmp/a.pdf'), isFalse);
+      expect(OfficeTarget.docx.acceptsPath('/tmp/a.PDF'), isTrue);
+      expect(OfficeTarget.xlsx.acceptsPath('/tmp/a.docx'), isFalse);
+    });
+  });
+
+  group('Office conversion', () {
+    late Directory temp;
+
+    setUp(() async {
+      temp = await Directory.systemTemp.createTemp('pindaiin_test_');
+    });
+
+    tearDown(() async {
+      await temp.delete(recursive: true);
+    });
+
+    test('mock produces a valid PDF from a DOCX', () async {
+      final repository = MockOfficeConversionRepository(
+        stepLatency: Duration.zero,
+      );
+      final source = File('${temp.path}/report.docx')
+        ..writeAsBytesSync(List.filled(128, 1));
+      final output = '${temp.path}/report.pdf';
+
+      final converter = RepositoryOfficeConverter(repository: repository);
+      final artifact = await converter.convert(
+        inputPath: source.path,
+        outputPath: output,
+        target: OfficeTarget.pdf,
+      );
+
+      expect(artifact.path, output);
+      expect(artifact.kind, FileKind.pdf);
+      final bytes = File(output).readAsBytesSync();
+      expect(ascii.decode(bytes.sublist(0, 5)), '%PDF-');
+    });
+
+    test('mock produces a readable DOCX from a PDF', () async {
+      final repository = MockOfficeConversionRepository(
+        stepLatency: Duration.zero,
+      );
+      final source = File('${temp.path}/scan.pdf')
+        ..writeAsBytesSync(utf8.encode('%PDF-1.4 fake'));
+      final output = '${temp.path}/scan.docx';
+
+      await RepositoryOfficeConverter(repository: repository).convert(
+        inputPath: source.path,
+        outputPath: output,
+        target: OfficeTarget.docx,
+      );
+
+      final archive = ZipDecoder().decodeBytes(File(output).readAsBytesSync());
+      final names = archive.files.map((file) => file.name).toSet();
+      expect(names, contains('word/document.xml'));
+      expect(names, contains('[Content_Types].xml'));
+    });
+
+    test('mock produces a readable XLSX from a PDF', () async {
+      final repository = MockOfficeConversionRepository(
+        stepLatency: Duration.zero,
+      );
+      final source = File('${temp.path}/table.pdf')
+        ..writeAsBytesSync(utf8.encode('%PDF-1.4 fake'));
+      final output = '${temp.path}/table.xlsx';
+
+      await RepositoryOfficeConverter(repository: repository).convert(
+        inputPath: source.path,
+        outputPath: output,
+        target: OfficeTarget.xlsx,
+      );
+
+      final archive = ZipDecoder().decodeBytes(File(output).readAsBytesSync());
+      final names = archive.files.map((file) => file.name).toSet();
+      expect(names, contains('xl/workbook.xml'));
+      expect(names, contains('xl/worksheets/sheet1.xml'));
+    });
+
+    test('rejects a mismatched extension before conversion', () async {
+      final source = File('${temp.path}/image.jpg')
+        ..writeAsBytesSync(List.filled(64, 1));
+
+      await expectLater(
+        RepositoryOfficeConverter(
+          repository: MockOfficeConversionRepository(stepLatency: Duration.zero),
+        ).convert(
+          inputPath: source.path,
+          outputPath: '${temp.path}/out.pdf',
+          target: OfficeTarget.pdf,
+        ),
+        throwsA(
+          isA<OfficeConversionException>().having(
+            (error) => error.code,
+            'code',
+            OfficeErrorCode.unsupportedFormat,
+          ),
+        ),
+      );
+    });
+
+    test('rejects files above the upload limit', () async {
+      final source = File('${temp.path}/big.docx')
+        ..writeAsBytesSync(List.filled(256, 1));
+      final repository = _TinyLimitRepository();
+
+      await expectLater(
+        RepositoryOfficeConverter(repository: repository).convert(
+          inputPath: source.path,
+          outputPath: '${temp.path}/big.pdf',
+          target: OfficeTarget.pdf,
+        ),
+        throwsA(
+          isA<OfficeConversionException>().having(
+            (error) => error.code,
+            'code',
+            OfficeErrorCode.fileTooLarge,
+          ),
+        ),
+      );
+    });
+
+    test('rejects empty files', () async {
+      final source = File('${temp.path}/empty.docx')..writeAsBytesSync([]);
+
+      await expectLater(
+        RepositoryOfficeConverter(
+          repository: MockOfficeConversionRepository(stepLatency: Duration.zero),
+        ).convert(
+          inputPath: source.path,
+          outputPath: '${temp.path}/empty.pdf',
+          target: OfficeTarget.pdf,
+        ),
+        throwsA(
+          isA<OfficeConversionException>().having(
+            (error) => error.code,
+            'code',
+            OfficeErrorCode.emptyFile,
+          ),
+        ),
+      );
+    });
+  });
+
   group('FileStorageService.sanitizeFileName', () {
     final storage = FileStorageService();
 
@@ -135,4 +289,25 @@ void main() {
       expect(sanitized.endsWith('.pdf'), isTrue);
     });
   });
+}
+
+/// Minimal backend used to test the client-side size guard.
+class _TinyLimitRepository implements OfficeConversionRepository {
+  @override
+  bool get isRemote => false;
+
+  @override
+  String get backendLabel => 'test';
+
+  @override
+  int get maxUploadBytes => 128;
+
+  @override
+  Future<OfficeConversionResponse> convert(
+    OfficeConversionRequest request, {
+    OfficeProgressCallback? onProgress,
+  }) async => throw StateError('must not be called');
+
+  @override
+  Future<void> dispose() async {}
 }

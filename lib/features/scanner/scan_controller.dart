@@ -1,5 +1,4 @@
 import 'dart:io';
-import 'dart:typed_data';
 import 'dart:ui' show Rect;
 
 import 'package:flutter/foundation.dart';
@@ -31,9 +30,9 @@ class ScanExportResult {
 /// A session folder under the cache is used for the page copies, so deleting or
 /// cancelling a scan never touches the user's original photos.
 class ScanController extends ChangeNotifier {
-  ScanController({required AppServices services}) : _services = services;
+  ScanController({required this.services});
 
-  final AppServices _services;
+  final AppServices services;
   final Uuid _uuid = const Uuid();
 
   final List<ScanPage> _pages = [];
@@ -58,13 +57,13 @@ class ScanController extends ChangeNotifier {
       _pages.isEmpty ? null : _pages[_currentIndex.clamp(0, _pages.length - 1)];
 
   Future<Directory> _ensureSessionDir() async {
-    return _sessionDir ??= await _services.createSessionDirectory();
+    return _sessionDir ??= await services.createSessionDirectory();
   }
 
   Future<void> addFromCamera() async {
     try {
       _setBusy('Opening camera…');
-      final paths = await _services.fileAccess.capturePhoto();
+      final paths = await services.fileAccess.capturePhoto();
       await addImages(paths);
     } catch (error) {
       _error = _describe(error);
@@ -76,7 +75,7 @@ class ScanController extends ChangeNotifier {
   Future<void> addFromGallery() async {
     try {
       _setBusy('Opening gallery…');
-      final paths = await _services.fileAccess.pickFromGallery();
+      final paths = await services.fileAccess.pickFromGallery();
       await addImages(paths);
     } catch (error) {
       _error = _describe(error);
@@ -92,7 +91,7 @@ class ScanController extends ChangeNotifier {
       _setBusy('Adding pages…');
       final dir = await _ensureSessionDir();
       for (final path in sourcePaths) {
-        final copy = await _services.storage.copyIntoDirectory(path, dir);
+        final copy = await services.storage.copyIntoDirectory(path, dir);
         _pages.add(ScanPage(id: _uuid.v4(), imagePath: copy));
       }
       _currentIndex = _pages.length - 1;
@@ -110,12 +109,13 @@ class ScanController extends ChangeNotifier {
     _notify();
   }
 
+  /// [newIndex] is already adjusted for the removed item (onReorderItem).
   void reorder(int oldIndex, int newIndex) {
     if (oldIndex < 0 || oldIndex >= _pages.length) return;
-    if (newIndex > oldIndex) newIndex -= 1;
     final page = _pages.removeAt(oldIndex);
-    _pages.insert(newIndex.clamp(0, _pages.length), page);
-    _currentIndex = newIndex.clamp(0, _pages.length - 1);
+    final target = newIndex.clamp(0, _pages.length);
+    _pages.insert(target, page);
+    _currentIndex = target.clamp(0, _pages.length - 1);
     _notify();
   }
 
@@ -147,7 +147,7 @@ class ScanController extends ChangeNotifier {
   void removePage(int index) {
     if (index < 0 || index >= _pages.length) return;
     _pages.removeAt(index);
-    _currentIndex = _currentIndex.clamp(0, _pages.length == 0 ? 0 : _pages.length - 1);
+    _currentIndex = _currentIndex.clamp(0, _pages.isEmpty ? 0 : _pages.length - 1);
     _notify();
   }
 
@@ -175,20 +175,20 @@ class ScanController extends ChangeNotifier {
       final files = <ScannedFile>[];
 
       for (var index = 0; index < _pages.length; index++) {
-        final bytes = await _services.images.renderPage(
+        final bytes = await services.images.renderPage(
           _pages[index],
           quality: quality,
           asPng: format == ImageExportFormat.png,
         );
         final name =
             '${base}_p${(index + 1).toString().padLeft(2, '0')}.$extension';
-        final path = await _services.storage.writeBytes(
-          directory: _services.directories.scans,
+        final path = await services.storage.writeBytes(
+          directory: services.directories.scans,
           fileName: name,
           bytes: bytes,
         );
         files.add(
-          await _services.registerFile(
+          await services.registerFile(
             path: path,
             origin: FileOrigin.scan,
             pageCount: 1,
@@ -214,7 +214,7 @@ class ScanController extends ChangeNotifier {
     try {
       final rendered = <List<int>>[];
       for (var index = 0; index < _pages.length; index++) {
-        final bytes = await _services.images.renderPage(
+        final bytes = await services.images.renderPage(
           _pages[index],
           quality: quality,
         );
@@ -224,15 +224,15 @@ class ScanController extends ChangeNotifier {
       }
 
       final name = 'Scan_${Formatters.fileStamp(DateTime.now())}.pdf';
-      final outputPath = await _services.storage.uniquePathIn(
-        _services.directories.scans,
+      final outputPath = await services.storage.uniquePathIn(
+        services.directories.scans,
         name,
       );
 
       _busyLabel = 'Building PDF…';
       _notify();
 
-      final path = await _services.pdf.bytesToPdf(
+      final path = await services.pdf.bytesToPdf(
         jpegPages: rendered.map(Uint8List.fromList).toList(growable: false),
         outputPath: outputPath,
         onProgress: (progress) {
@@ -241,7 +241,7 @@ class ScanController extends ChangeNotifier {
         },
       );
 
-      final file = await _services.registerFile(
+      final file = await services.registerFile(
         path: path,
         origin: FileOrigin.scan,
         pageCount: _pages.length,
@@ -284,7 +284,7 @@ class ScanController extends ChangeNotifier {
     final dir = _sessionDir;
     if (dir != null) {
       // Best-effort cleanup of the temporary page copies.
-      _services.storage.deleteDirectoryQuietly(dir.path);
+      services.storage.deleteDirectoryQuietly(dir.path);
     }
     super.dispose();
   }

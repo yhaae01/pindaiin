@@ -1,3 +1,5 @@
+import 'package:path/path.dart' as p;
+
 import 'scanned_file.dart';
 
 /// Shared quality presets for both export directions.
@@ -18,18 +20,82 @@ enum PdfQuality {
   final double renderScale;
 }
 
-/// Conversions the UI can request. `officeToPdf` is routed to the pluggable
-/// [OfficeConverter] so a backend can be wired in later without UI changes.
+/// Target of an Office conversion. Also declares which inputs are valid so the
+/// UI and the repository validate the same rules.
+enum OfficeTarget {
+  pdf(
+    'PDF',
+    'pdf',
+    'application/pdf',
+    FileKind.pdf,
+    ['doc', 'docx', 'odt', 'rtf', 'xls', 'xlsx', 'csv'],
+  ),
+  docx(
+    'Word',
+    'docx',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    FileKind.document,
+    ['pdf'],
+  ),
+  xlsx(
+    'Excel',
+    'xlsx',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    FileKind.spreadsheet,
+    ['pdf'],
+  );
+
+  const OfficeTarget(
+    this.label,
+    this.extension,
+    this.mimeType,
+    this.artifactKind,
+    this.sourceExtensions,
+  );
+
+  final String label;
+  final String extension;
+  final String mimeType;
+  final FileKind artifactKind;
+  final List<String> sourceExtensions;
+
+  bool acceptsPath(String path) =>
+      sourceExtensions.contains(p.extension(path).toLowerCase().replaceFirst('.', ''));
+}
+
+/// Conversions the UI can request. Office modes are routed to the pluggable
+/// [OfficeConverter] repository so a backend can be wired in without UI changes.
 enum ConversionMode {
   imagesToPdf,
   pdfToImages,
-  officeToPdf;
+  officeToPdf,
+  pdfToWord,
+  pdfToExcel;
 
   String get label => switch (this) {
     ConversionMode.imagesToPdf => 'Images → PDF',
     ConversionMode.pdfToImages => 'PDF → Images',
     ConversionMode.officeToPdf => 'Office → PDF',
+    ConversionMode.pdfToWord => 'PDF → Word',
+    ConversionMode.pdfToExcel => 'PDF → Excel',
   };
+
+  bool get isOffice => officeTarget != null;
+
+  OfficeTarget? get officeTarget => switch (this) {
+    ConversionMode.officeToPdf => OfficeTarget.pdf,
+    ConversionMode.pdfToWord => OfficeTarget.docx,
+    ConversionMode.pdfToExcel => OfficeTarget.xlsx,
+    _ => null,
+  };
+}
+
+/// Progress update with an optional human-readable stage ("Uploading…").
+class ConversionProgress {
+  const ConversionProgress(this.fraction, [this.label]);
+
+  final double fraction;
+  final String? label;
 }
 
 class ConversionArtifact {
@@ -46,6 +112,7 @@ class ConversionArtifact {
 
 class ConversionResult {
   const ConversionResult({required this.artifacts});
+
 
   final List<ConversionArtifact> artifacts;
 }

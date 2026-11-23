@@ -23,8 +23,10 @@ All file processing happens on the device.
 **Converter**
 - Images (JPG/PNG/WebP) → PDF: fully offline.
 - PDF → JPG images: fully offline.
-- Office (DOCX/XLSX) → PDF: routed through `OfficeConverter`. A stub with a
-  clear UI notice is shipped; the interface is ready for a backend.
+- Office: DOCX/XLSX/DOC/XLS → PDF and PDF → DOCX/XLSX through an
+  `OfficeConversionRepository`. Ships with a simulated demo backend and a REST
+  client ready for a self-hosted renderer. Upload/download progress, validation
+  (extension + 25 MB limit), timeouts and user-safe errors are handled.
 
 ## Project structure
 
@@ -45,7 +47,13 @@ lib/
 │   │   ├── file_access_service.dart   # camera, gallery, SAF picker, share, open
 │   │   ├── image_processor.dart  # isolate export pipeline
 │   │   ├── pdf_converter.dart    # images→PDF and PDF→images (pdf/pdfx)
-│   │   ├── office_converter.dart # interface + unavailable stub
+│   │   ├── office_converter.dart # interface used by the conversion service
+│   │   ├── office/
+│   │   │   ├── office_conversion_models.dart      # target, progress, errors
+│   │   │   ├── office_conversion_repository.dart  # repository abstraction
+│   │   │   ├── rest_office_conversion_repository.dart  # Dio multipart client
+│   │   │   ├── mock_office_conversion_repository.dart  # offline demo backend
+│   │   │   └── repository_office_converter.dart   # validate + call + save
 │   │   └── document_converter_service.dart  # validates and routes conversions
 │   ├── theme/app_theme.dart
 │   ├── utils/formatters.dart
@@ -80,6 +88,8 @@ separate: no widget touches the filesystem or a plugin directly.
 | `open_filex` | "Open with" for arbitrary file types. |
 | `uuid` | Collision-free ids for files/pages/session folders. |
 | `intl` | Timestamps used in names and list subtitles. |
+| `dio` | Multipart upload with send/receive progress, timeouts and typed network errors for the Office backend. |
+| `archive` | Builds valid minimal DOCX/XLSX placeholder files in the demo Office backend. |
 
 ## How key flows work
 
@@ -102,39 +112,41 @@ scan deletes that folder; the user's originals are untouched. Only exported
 files are registered in Hive.
 
 **Converter.** `DocumentConverterService` validates inputs and routes to
-`PdfConverter` (local) or `OfficeConverter` (pluggable). The controller only
-knows the service, so swapping the Office stub for a network implementation does
+`PdfConverter` (local) or `OfficeConverter` (pluggable repository). The
+controller only knows the service, so swapping the Office implementation does
 not change any widget.
 
-### Wiring an Office backend later
+### Office conversion flow
 
-Implement `OfficeConverter`:
+`OfficeConversionRepository` is the boundary. Two implementations ship:
 
-```dart
-class HttpOfficeConverter implements OfficeConverter {
-  @override
-  bool get isAvailable => true;
+| Implementation | When | Behaviour |
+| --- | --- | --- |
+| `MockOfficeConversionRepository` | `OFFICE_API_URL` not set | Simulates upload/convert/download progress with real delays and writes valid, clearly-labelled placeholder PDF/DOCX/XLSX files. |
+| `RestOfficeConversionRepository` | `OFFICE_API_URL` set | Multipart POST with upload/download progress, 20 s connect + 3 min transfer timeouts, typed error mapping, `content-disposition` parsing. |
 
-  @override
-  String get availabilityNote => '';
+Flow for every Office mode:
 
-  @override
-  Future<ConversionArtifact> convertToPdf({
-    required String inputPath,
-    required String outputPath,
-    void Function(double progress)? onProgress,
-  }) async {
-    // 1. POST the file (signed URL or multipart).
-    // 2. Poll / await webhook.
-    // 3. Download the PDF to outputPath.
-    // 4. Report progress; throw ConversionException on failure.
-  }
-}
+1. Pick a file (system picker or local history).
+2. `RepositoryOfficeConverter` validates the extension for the target, rejects
+   empty files and anything over 25 MB (server must enforce this too).
+3. Upload → convert → download, reporting `OfficeProgress` stages to the UI.
+4. Bytes are written to the app exports folder, registered in Hive history, and
+   the result card offers Share / View in Files (preview).
+
+Configure the real backend (no code change needed):
+
+```bash
+flutter run \
+  --dart-define=OFFICE_API_URL=https://convert.example.com \
+  --dart-define=OFFICE_API_KEY=<token>
 ```
 
-Then construct it in `AppServices.bootstrap()` instead of
-`UnavailableOfficeConverter`. The converter tab and its disabled state update
-automatically.
+Contract, error codes, security and temp-file cleanup guidance:
+[`docs/office-conversion-api.md`](docs/office-conversion-api.md).
+
+To plug a different engine, implement `OfficeConversionRepository` and return it
+from `AppServices.bootstrap()`; nothing above the service layer changes.
 
 ## Run
 
@@ -148,6 +160,9 @@ desktop/web are not targeted because `pdfx`/`image_picker` are mobile plugins.
 
 ## Android permissions & storage
 
+- **Internet:** `INTERNET` is declared for the optional Office conversion
+  backend only. Scans, image/PDF conversions and the file hub work offline; use
+  HTTPS (release builds block cleartext traffic).
 - **Camera:** no `CAMERA` permission is declared. `image_picker` launches the
   system camera app through an intent and receives the resulting photo, so
   declaring `CAMERA` would force a runtime permission prompt (and break the
@@ -190,11 +205,23 @@ desktop/web are not targeted because `pdfx`/`image_picker` are mobile plugins.
     background the app during export, then return.
 11. **Permission denial:** deny camera in the system camera app; the batch should
     remain unchanged with an error message.
+12. **Office backend offline:** stop the server or enable airplane mode during a
+    DOCX→PDF conversion. The upload must fail with a retryable network error and
+    leave no partial file in history.
+13. **Oversized/corrupt Office files:** a 30 MB DOCX or a renamed `.jpg` must be
+    rejected before upload with a clear message.
+14. **Backend timeout:** make the converter sleep longer than the client timeout;
+    the UI must return to an idle state with a retry option.
+15. **DOCX/XLSX output:** after PDF→Word/Excel, tap the result in Files and use
+    "Open with" to confirm the device's Office app can open it (demo backend
+    produces valid placeholder packages).
 
 ## Known limitations
 
-- Office conversions are not implemented locally; the UI disables them until an
-  `OfficeConverter` is provided.
+- Without `OFFICE_API_URL`, Office modes use the demo backend: outputs are valid
+  placeholder files, not the real document. The converter shows a notice.
+- PDF → DOCX/XLSX fidelity depends on the backend; PDFs describe glyph
+  positions, so editable output is approximate.
 - PDF → images always outputs JPG (quality preset controls resolution/quality).
 - No OCR, no cloud sync, no multi-select in the file hub yet.
 - PDF page preview uses a single page at a time by design; continuous scrolling
