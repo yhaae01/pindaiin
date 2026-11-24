@@ -5,6 +5,7 @@ import '../../core/services/app_services.dart';
 import '../../core/widgets/scan_page_image.dart';
 import '../../core/widgets/status_views.dart';
 import 'crop_screen.dart';
+import 'document_edges_screen.dart';
 import 'scan_controller.dart';
 import 'sheets/export_sheet.dart';
 import 'sheets/filter_sheet.dart';
@@ -36,6 +37,12 @@ class _BatchEditorScreenState extends State<BatchEditorScreen> {
       ),
     );
     if (crop != null) _controller.setCrop(index, crop);
+  }
+
+  Future<void> _openEdges() async {
+    final page = _controller.currentPage;
+    if (page == null) return;
+    await openDocumentEdges(context, _controller, _controller.currentIndex);
   }
 
   Future<void> _openFilters() async {
@@ -73,8 +80,12 @@ class _BatchEditorScreenState extends State<BatchEditorScreen> {
     );
     if (source == null) return;
     if (source == _AddSource.camera) {
-      await _controller.addFromCamera();
+      final index = await _controller.addFromCamera();
+      if (!mounted) return;
+      if (index != null) await openDocumentEdges(context, _controller, index);
     } else {
+      // Bulk imports are straightened automatically; uncertain pages can be
+      // adjusted later with the Edges tool.
       await _controller.addFromGallery();
     }
     if (mounted && _controller.error != null) {
@@ -262,6 +273,11 @@ class _BatchEditorScreenState extends State<BatchEditorScreen> {
                   onTap: page == null
                       ? null
                       : () => _controller.rotateCurrent(),
+                ),
+                _ToolButton(
+                  icon: Icons.document_scanner_outlined,
+                  label: 'Edges',
+                  onTap: page == null ? null : _openEdges,
                 ),
                 _ToolButton(
                   icon: Icons.crop,

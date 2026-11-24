@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:path/path.dart' as p;
 import 'package:uuid/uuid.dart';
 
+import '../document/document_processor.dart';
 import '../models/scanned_file.dart';
 import 'app_directories.dart';
 import 'document_converter_service.dart';
@@ -25,6 +26,7 @@ class AppServices {
     required this.repository,
     required this.fileAccess,
     required this.images,
+    required this.documents,
     required this.pdf,
     required this.converter,
   });
@@ -34,6 +36,11 @@ class AppServices {
   final FileRepository repository;
   final FileAccessService fileAccess;
   final ImageProcessor images;
+
+  /// Document edge detection + perspective warp for scanned pages. Swap the
+  /// detector or warper here to change the algorithm app-wide.
+  final DocumentProcessor documents;
+
   final PdfConverter pdf;
   final DocumentConverterService converter;
 
@@ -64,6 +71,7 @@ class AppServices {
       repository: repository,
       fileAccess: FileAccessService(),
       images: const ImageProcessor(),
+      documents: DocumentProcessor(),
       pdf: pdf,
       converter: DocumentConverterService(pdf: pdf, office: office),
     );

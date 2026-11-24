@@ -4,6 +4,8 @@ import 'dart:ui' show Rect;
 import 'package:flutter/foundation.dart';
 import 'package:uuid/uuid.dart';
 
+import '../../core/document/document_corners.dart';
+import '../../core/document/document_detector.dart';
 import '../../core/models/conversion.dart';
 import '../../core/models/scan_page.dart';
 import '../../core/models/scanned_file.dart';
@@ -60,13 +62,22 @@ class ScanController extends ChangeNotifier {
     return _sessionDir ??= await services.createSessionDirectory();
   }
 
-  Future<void> addFromCamera() async {
+  /// Captures one page. The photo is added untouched so the caller can show
+  /// the edge adjustment screen before the page is straightened.
+  ///
+  /// Returns the index of the new page, or null when nothing was captured.
+  Future<int?> addFromCamera() async {
     try {
       _setBusy('Opening camera…');
       final paths = await services.fileAccess.capturePhoto();
-      await addImages(paths);
+      if (paths.isEmpty) return null;
+      final dir = await _ensureSessionDir();
+      final index = await _appendPages(paths, dir);
+      _error = null;
+      return index;
     } catch (error) {
       _error = _describe(error);
+      return null;
     } finally {
       _clearBusy();
     }
@@ -85,22 +96,139 @@ class ScanController extends ChangeNotifier {
   }
 
   /// Copies [sourcePaths] into the session and appends them as pages.
-  Future<void> addImages(List<String> sourcePaths) async {
+  ///
+  /// When [autoStraighten] is true (bulk gallery imports) each page is run
+  /// through edge detection and warped headlessly. Uncertain detections are
+  /// left alone so the user can adjust them by hand in the batch editor.
+  Future<void> addImages(
+    List<String> sourcePaths, {
+    bool autoStraighten = true,
+  }) async {
     if (sourcePaths.isEmpty) return;
     try {
       _setBusy('Adding pages…');
       final dir = await _ensureSessionDir();
-      for (final path in sourcePaths) {
-        final copy = await services.storage.copyIntoDirectory(path, dir);
-        _pages.add(ScanPage(id: _uuid.v4(), imagePath: copy));
+      final lastIndex = await _appendPages(sourcePaths, dir);
+      _error = null;
+
+      if (autoStraighten) {
+        final firstIndex = lastIndex - sourcePaths.length + 1;
+        for (var index = firstIndex; index <= lastIndex; index++) {
+          _busyLabel = 'Detecting page edges…';
+          _progress = (index - firstIndex) / sourcePaths.length;
+          _notify();
+          await _autoStraighten(index);
+        }
       }
-      _currentIndex = _pages.length - 1;
+    } catch (error) {
+      _error = _describe(error);
+    } finally {
+      _clearBusy();
+    }
+  }
+
+  /// Copies the files into the session folder and returns the last page index.
+  Future<int> _appendPages(List<String> sourcePaths, Directory dir) async {
+    for (final path in sourcePaths) {
+      final copy = await services.storage.copyIntoDirectory(path, dir);
+      _pages.add(ScanPage(id: _uuid.v4(), imagePath: copy));
+    }
+    _currentIndex = _pages.length - 1;
+    return _pages.length - 1;
+  }
+
+  /// Detects and warps a freshly imported page. Failures keep the original
+  /// photo, which can still be adjusted manually.
+  Future<void> _autoStraighten(int index) async {
+    try {
+      final detection = await detectPageEdges(index);
+      if (!detection.isConfident || detection.corners.isFullFrame) return;
+      await _warpPage(index, detection.corners);
+    } catch (_) {
+      // Best effort; the page stays as imported.
+    }
+  }
+
+  /// Runs edge detection on the page source and returns corners already in the
+  /// orientation the user sees (page rotation applied).
+  Future<DocumentDetection> detectPageEdges(int index) async {
+    final page = _pages[index];
+    final detection = await services.documents.detectFile(
+      page.editableSourcePath,
+    );
+    return detection.rotated(page.quarterTurns);
+  }
+
+  /// Warps the page to [corners] and replaces its working image.
+  ///
+  /// [corners] must be in the orientation of the page as displayed, i.e. after
+  /// its current quarter turns. Rotation and crop are reset because they are
+  /// baked into the new image, and the original photo is kept for later
+  /// re-adjustment.
+  Future<void> applyDocumentCorners(
+    int index,
+    DocumentCorners corners, {
+    int? quarterTurns,
+    ScanFilter? filter,
+  }) async {
+    if (index < 0 || index >= _pages.length) return;
+    _setBusy('Straightening page…');
+    try {
+      await _warpPage(index, corners, quarterTurns: quarterTurns);
+      if (filter != null) {
+        _pages[index] = _pages[index].copyWith(filter: filter);
+      }
       _error = null;
     } catch (error) {
       _error = _describe(error);
     } finally {
       _clearBusy();
     }
+  }
+
+  Future<void> _warpPage(
+    int index,
+    DocumentCorners corners, {
+    int? quarterTurns,
+  }) async {
+    final page = _pages[index];
+    final turns = (quarterTurns ?? page.quarterTurns) % 4;
+    final source = page.editableSourcePath;
+
+    // Nothing to straighten: keep the original bytes instead of re-encoding.
+    final workingPath = corners.isFullFrame && corners.isValid && turns == 0
+        ? source
+        : await _writeWarpedPage(page, source, corners, turns);
+
+    if (page.imagePath != source && page.imagePath != workingPath) {
+      await services.storage.deleteQuietly(page.imagePath);
+    }
+
+    _pages[index] = page.copyWith(
+      imagePath: workingPath,
+      sourceImagePath: source,
+      quarterTurns: 0,
+      crop: const Rect.fromLTWH(0, 0, 1, 1),
+    );
+  }
+
+  Future<String> _writeWarpedPage(
+    ScanPage page,
+    String source,
+    DocumentCorners corners,
+    int quarterTurns,
+  ) async {
+    final bytes = await services.documents.warpFile(
+      source,
+      corners: corners,
+      quarterTurns: quarterTurns,
+    );
+    final dir = await _ensureSessionDir();
+    return services.storage.writeBytes(
+      directory: dir,
+      fileName: 'page_${page.id}_straight.jpg',
+      bytes: bytes,
+    );
   }
 
   void select(int index) {

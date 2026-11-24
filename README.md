@@ -9,8 +9,14 @@ All file processing happens on the device.
 **Scanner**
 - Capture pages with the system camera (one page per shot) or import several
   photos at once.
-- Batch editor: reorder by dragging, rotate left/right, crop with corner
-  handles, apply Original / Grayscale / Document filters.
+- Automatic document edge detection: the paper sheet is found, the page is
+  perspective-warped (deskewed) and everything outside it — desk, hands,
+  surroundings — is cropped away.
+- Adjust edges: a zoomed preview with four draggable corner handles, so a
+  missed or low-contrast detection can be fixed before the warp is applied.
+- Batch editor: reorder by dragging, rotate left/right, fine-crop with corner
+  handles, apply Original / Grayscale / Document filters, and re-adjust the
+  perspective from the untouched original at any time.
 - Export the batch as one multi-page PDF (quality presets) or one JPG/PNG per
   page. Exported files are registered in the file hub immediately.
 
@@ -35,9 +41,16 @@ lib/
 ├── main.dart                     # Hive init + bootstrap + runApp
 ├── app.dart                      # providers, MaterialApp, theme
 ├── core/
+│   ├── document/                 # document scanning pipeline (pluggable)
+│   │   ├── document_corners.dart       # normalized 4-corner page quad
+│   │   ├── document_detector.dart      # DocumentDetector interface + result
+│   │   ├── edge_document_detector.dart # Otsu mask → largest blob → quad
+│   │   ├── perspective_transform.dart  # 3x3 homography (unit square → quad)
+│   │   ├── perspective_warper.dart     # PerspectiveWarper interface + warp
+│   │   └── document_processor.dart     # facade: detect + warp by file path
 │   ├── models/
 │   │   ├── scanned_file.dart     # metadata model + JSON + FileKind/FileOrigin
-│   │   ├── scan_page.dart        # page edits (rotation, crop, filter)
+│   │   ├── scan_page.dart        # page edits (rotation, crop, filter, source)
 │   │   └── conversion.dart       # quality presets, modes, result types
 │   ├── services/
 │   │   ├── app_services.dart     # composition root (singletons + file registry)
@@ -59,11 +72,12 @@ lib/
 │   ├── utils/formatters.dart
 │   └── widgets/
 │       ├── scan_page_image.dart  # rotation/crop/filter preview painter
+│       ├── document_quad_overlay.dart  # draggable 4-corner page handles
 │       ├── crop_overlay.dart     # interactive crop handles
 │       └── status_views.dart     # empty/error/busy states, dialogs
 └── features/
     ├── home/home_shell.dart
-    ├── scanner/                  # controller, capture screen, editor, crop, sheets
+    ├── scanner/                  # controller, capture screen, edge editor, batch editor, crop, sheets
     ├── files/                    # controller, list, preview
     └── converter/                # controller, screen
 ```
@@ -96,6 +110,32 @@ separate: no widget touches the filesystem or a plugin directly.
 **Non-destructive editing.** A `ScanPage` stores `quarterTurns`, a crop `Rect`
 normalized to the *rotated* page, and a filter. Rotating a page also rotates its
 crop, so the visible region stays put. Nothing is re-encoded while editing.
+
+**Document capture and deskew.** Capturing a page goes through four stages:
+
+1. **Detect** (`EdgeDocumentDetector`) — the photo is downscaled to 480 px, a
+   luminance threshold (Otsu) separates the bright sheet from the background,
+   the largest connected region is flood-filled, and the largest quadrilateral
+   inscribed in its convex hull becomes the page outline. The result carries a
+   confidence score instead of a hard yes/no.
+2. **Confirm/adjust** (`DocumentEdgesScreen`) — a zoomed preview draws the four
+   corners; drag a handle (pinch, +/− or Fit to zoom) when detection is
+   uncertain, and pick the document filter with a live preview.
+3. **Warp** (`HomographyPerspectiveWarper`) — the four corners define a
+   projective transform from the output rectangle to the photo, so every
+   output pixel is sampled bilinearly from the source. Lines stay straight,
+   the page is deskewed, and the output size follows the measured page edges
+   (capped at 2600 px for editing, 3000 px on export).
+4. **Batch** — the straightened JPEG is written to the session folder and
+   becomes the page image. Rotation, crop and filter stay non-destructive on
+   top of it, and the untouched photo is kept in `ScanPage.sourceImagePath` so
+   "Edges" can start over without compounding quality loss.
+
+Gallery imports are straightened headlessly during import (uncertain pages are
+left untouched); camera captures always open the edge editor. The detector and
+warper only meet at `DocumentProcessor`, constructed in
+`AppServices.bootstrap()` — swapping either interface changes no widget or
+controller.
 
 **Export pipeline** (`ImageProcessor`, in an isolate):
 `bake EXIF orientation → downscale to ≤3000 px → rotate → crop → filter → encode`.
@@ -224,5 +264,11 @@ desktop/web are not targeted because `pdfx`/`image_picker` are mobile plugins.
   positions, so editable output is approximate.
 - PDF → images always outputs JPG (quality preset controls resolution/quality).
 - No OCR, no cloud sync, no multi-select in the file hub yet.
+- Edge detection is heuristic: it assumes a bright sheet on a contrasting
+  background. One-bright-surface scenes and very low contrast fall back to the
+  full frame and rely on the manual corner handles. There is no shadow removal
+  or curvature correction yet.
+- The perspective warp runs in pure Dart (isolate). A native/OpenCV
+  implementation can replace `PerspectiveWarper` without touching the UI.
 - PDF page preview uses a single page at a time by design; continuous scrolling
   with pre-rendering would need a page cache.

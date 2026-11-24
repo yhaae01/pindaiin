@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../../core/services/app_services.dart';
 import '../../core/widgets/status_views.dart';
 import 'batch_editor_screen.dart';
+import 'document_edges_screen.dart';
 import 'scan_controller.dart';
 import 'widgets/page_thumbnail.dart';
 
@@ -36,6 +37,19 @@ class _ScanSessionScreenState extends State<ScanSessionScreen> {
     if (!mounted) return;
     final error = _controller.error;
     if (error != null) showSnack(context, error);
+  }
+
+  /// Captures a page, then lets the user confirm/correct the detected paper
+  /// edges before the warp is applied.
+  Future<void> _capture() async {
+    final index = await _controller.addFromCamera();
+    if (!mounted) return;
+    final error = _controller.error;
+    if (error != null) {
+      showSnack(context, error);
+      return;
+    }
+    if (index != null) await openDocumentEdges(context, _controller, index);
   }
 
   Future<void> _continue() async {
@@ -101,9 +115,7 @@ class _ScanSessionScreenState extends State<ScanSessionScreen> {
                             icon: Icons.photo_camera_outlined,
                             label: 'Capture',
                             hint: 'One photo per page',
-                            onTap: _controller.isBusy
-                                ? null
-                                : () => _run(_controller.addFromCamera),
+                            onTap: _controller.isBusy ? null : _capture,
                           ),
                         ),
                         const SizedBox(width: 12),
