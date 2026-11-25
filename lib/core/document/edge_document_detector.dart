@@ -65,27 +65,107 @@ DocumentDetection detectDocumentEdges(
     );
   }
 
-  final width = image.width;
-  final height = image.height;
-  final pixelCount = width * height;
-  if (pixelCount < 64) {
-    return const DocumentDetection.unsure(note: 'The image is too small.');
+  return detectDocumentLuminance(
+    _luminanceOf(image),
+    width: image.width,
+    height: image.height,
+    analysisSize: analysisSize,
+  );
+}
+
+/// Detects the page on a grayscale (luminance) frame.
+///
+/// This is the detector core shared by still photos and live camera preview
+/// frames. [luminance] must contain [width] × [height] bytes, row-major. Frames
+/// longer than [analysisSize] are resampled down first, so the work per frame
+/// stays bounded regardless of the camera resolution.
+DocumentDetection detectDocumentLuminance(
+  Uint8List luminance, {
+  required int width,
+  required int height,
+  int analysisSize = 480,
+  int hullPoints = 48,
+}) {
+  if (width <= 0 || height <= 0 || luminance.length < width * height) {
+    return const DocumentDetection.unsure(
+      note: 'The camera frame could not be read.',
+    );
   }
 
-  // 1. Luminance plane and a global threshold (Otsu) that separates the bright
-  //    sheet from the darker surroundings.
-  final luminance = Uint8List(pixelCount);
+  final longest = math.max(width, height);
+  if (longest > analysisSize) {
+    final scale = analysisSize / longest;
+    final targetWidth = math.max(1, (width * scale).round());
+    final targetHeight = math.max(1, (height * scale).round());
+    return _detectFromLuminance(
+      _resample(luminance, width, height, targetWidth, targetHeight),
+      targetWidth,
+      targetHeight,
+      hullPoints,
+    );
+  }
+  return _detectFromLuminance(luminance, width, height, hullPoints);
+}
+
+Uint8List _luminanceOf(img.Image image) {
+  final width = image.width;
+  final height = image.height;
+  final luminance = Uint8List(width * height);
   for (var y = 0; y < height; y++) {
+    final row = y * width;
     for (var x = 0; x < width; x++) {
       final pixel = image.getPixel(x, y);
       final value = (0.299 * pixel.r + 0.587 * pixel.g + 0.114 * pixel.b).clamp(
         0,
         255,
       );
-      luminance[y * width + x] = value.toInt();
+      luminance[row + x] = value.toInt();
     }
   }
+  return luminance;
+}
 
+/// Nearest-neighbour grayscale resample. Detection tolerates the aliasing and
+/// it is much cheaper than a filtered resize per camera frame.
+Uint8List _resample(
+  Uint8List source,
+  int sourceWidth,
+  int sourceHeight,
+  int targetWidth,
+  int targetHeight,
+) {
+  final output = Uint8List(targetWidth * targetHeight);
+  for (var y = 0; y < targetHeight; y++) {
+    final sourceY = math.min(
+      sourceHeight - 1,
+      (y * sourceHeight / targetHeight).floor(),
+    );
+    final sourceRow = sourceY * sourceWidth;
+    final targetRow = y * targetWidth;
+    for (var x = 0; x < targetWidth; x++) {
+      final sourceX = math.min(
+        sourceWidth - 1,
+        (x * sourceWidth / targetWidth).floor(),
+      );
+      output[targetRow + x] = source[sourceRow + sourceX];
+    }
+  }
+  return output;
+}
+
+DocumentDetection _detectFromLuminance(
+  Uint8List luminance,
+  int width,
+  int height,
+  int hullPoints,
+) {
+  final pixelCount = width * height;
+  if (pixelCount < 64) {
+    return const DocumentDetection.unsure(note: 'The image is too small.');
+  }
+
+  // 1. A global threshold (Otsu) that separates the bright sheet from the
+  //    darker surroundings.
   final threshold = _otsuThreshold(luminance);
   final bright = Uint8List(pixelCount);
   var brightCount = 0;
@@ -139,7 +219,7 @@ DocumentDetection detectDocumentEdges(
       note: 'The page outline is too irregular to detect.',
     );
   }
-  final sampled = _sample(hull, 48);
+  final sampled = _sample(hull, hullPoints.clamp(8, 64));
   final indices = _largestQuadrilateral(sampled);
   if (indices.isEmpty) {
     return const DocumentDetection.unsure(note: 'No four-sided outline found.');

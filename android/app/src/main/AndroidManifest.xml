@@ -2,6 +2,12 @@
     <!-- Only used by the optional Office conversion backend. Scans, image/PDF
          conversions and file management stay fully offline. -->
     <uses-permission android:name="android.permission.INTERNET"/>
+    <!-- Live scanner preview (camera plugin). Declaring it forces a runtime
+         permission prompt; the system-camera fallback (image_picker) does not
+         need it, hence required="false" below. -->
+    <uses-permission android:name="android.permission.CAMERA"/>
+    <uses-feature android:name="android.hardware.camera" android:required="false"/>
+    <uses-feature android:name="android.hardware.camera.any" android:required="false"/>
     <application
         android:label="Pindaiin"
         android:name="${applicationName}"

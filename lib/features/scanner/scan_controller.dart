@@ -27,6 +27,24 @@ class ScanExportResult {
   final bool isPdf;
 }
 
+/// Outcome of adding one live-camera capture to the batch.
+class CapturedPageResult {
+  const CapturedPageResult({
+    required this.index,
+    required this.detection,
+    required this.straightened,
+  });
+
+  final int index;
+  final DocumentDetection detection;
+
+  /// True when the page was confidently detected and perspective-warped, so it
+  /// needs no manual edge work.
+  final bool straightened;
+
+  bool get needsEdgeReview => !straightened;
+}
+
 /// Owns one scan batch: the ordered pages plus their non-destructive edits.
 ///
 /// A session folder under the cache is used for the page copies, so deleting or
@@ -75,6 +93,62 @@ class ScanController extends ChangeNotifier {
       final index = await _appendPages(paths, dir);
       _error = null;
       return index;
+    } catch (error) {
+      _error = _describe(error);
+      return null;
+    } finally {
+      _clearBusy();
+    }
+  }
+
+  /// Adds one photo taken by the live scanner, detects its edges and warps it
+  /// when the detection is confident.
+  ///
+  /// Unlike the system-camera flow this runs immediately: the live scanner has
+  /// already shown the user where the page is, so a confident capture goes
+  /// straight into the batch. Low-contrast captures stay unwarped and the caller
+  /// can offer the manual edge editor.
+  Future<CapturedPageResult?> addCapturedPhoto(String sourcePath) async {
+    _setBusy('Processing page…');
+    _error = null;
+    try {
+      final dir = await _ensureSessionDir();
+      final copy = await services.storage.copyIntoDirectory(sourcePath, dir);
+      _pages.add(ScanPage(id: _uuid.v4(), imagePath: copy));
+      final index = _pages.length - 1;
+      _currentIndex = index;
+      _notify();
+
+      DocumentDetection detection;
+      try {
+        detection = await services.documents.detectFile(copy);
+      } catch (_) {
+        detection = const DocumentDetection.unsure(
+          note: 'Automatic edge detection failed. Adjust the corners manually.',
+        );
+      }
+
+      var straightened = false;
+      if (detection.isConfident && detection.corners.isValid) {
+        // A full-frame detection is already the page: keep the original bytes
+        // instead of re-encoding an identical image.
+        if (detection.corners.isFullFrame) {
+          straightened = true;
+        } else {
+          try {
+            await _warpPage(index, detection.corners);
+            straightened = true;
+          } catch (error) {
+            _error = _describe(error);
+          }
+        }
+      }
+
+      return CapturedPageResult(
+        index: index,
+        detection: detection,
+        straightened: straightened,
+      );
     } catch (error) {
       _error = _describe(error);
       return null;

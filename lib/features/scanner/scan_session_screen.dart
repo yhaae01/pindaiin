@@ -5,6 +5,7 @@ import '../../core/services/app_services.dart';
 import '../../core/widgets/status_views.dart';
 import 'batch_editor_screen.dart';
 import 'document_edges_screen.dart';
+import 'live_scan/live_scan_screen.dart';
 import 'scan_controller.dart';
 import 'widgets/page_thumbnail.dart';
 
@@ -39,9 +40,24 @@ class _ScanSessionScreenState extends State<ScanSessionScreen> {
     if (error != null) showSnack(context, error);
   }
 
-  /// Captures a page, then lets the user confirm/correct the detected paper
-  /// edges before the warp is applied.
+  /// Opens the live scanner. Pages are detected and straightened as they are
+  /// captured; the screen falls back to the system camera when the in-app
+  /// camera cannot be opened (permission denied, no back camera).
   Future<void> _capture() async {
+    final useSystemCamera = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(
+        builder: (_) => LiveScanScreen(controller: _controller),
+        fullscreenDialog: true,
+      ),
+    );
+    if (!mounted) return;
+
+    if (useSystemCamera != true) {
+      final error = _controller.error;
+      if (error != null) showSnack(context, error);
+      return;
+    }
+
     final index = await _controller.addFromCamera();
     if (!mounted) return;
     final error = _controller.error;
@@ -114,7 +130,7 @@ class _ScanSessionScreenState extends State<ScanSessionScreen> {
                           child: _ActionTile(
                             icon: Icons.photo_camera_outlined,
                             label: 'Capture',
-                            hint: 'One photo per page',
+                            hint: 'Live preview & auto edges',
                             onTap: _controller.isBusy ? null : _capture,
                           ),
                         ),

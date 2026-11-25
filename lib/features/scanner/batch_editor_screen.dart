@@ -6,6 +6,7 @@ import '../../core/widgets/scan_page_image.dart';
 import '../../core/widgets/status_views.dart';
 import 'crop_screen.dart';
 import 'document_edges_screen.dart';
+import 'live_scan/live_scan_screen.dart';
 import 'scan_controller.dart';
 import 'sheets/export_sheet.dart';
 import 'sheets/filter_sheet.dart';
@@ -64,7 +65,7 @@ class _BatchEditorScreenState extends State<BatchEditorScreen> {
             ListTile(
               leading: const Icon(Icons.photo_camera_outlined),
               title: const Text('Capture page'),
-              subtitle: const Text('Opens the camera'),
+              subtitle: const Text('Live preview with automatic edges'),
               onTap: () => Navigator.of(context).pop(_AddSource.camera),
             ),
             ListTile(
@@ -79,10 +80,20 @@ class _BatchEditorScreenState extends State<BatchEditorScreen> {
       ),
     );
     if (source == null) return;
+    if (!mounted) return;
     if (source == _AddSource.camera) {
-      final index = await _controller.addFromCamera();
+      final useSystemCamera = await Navigator.of(context).push<bool>(
+        MaterialPageRoute(
+          builder: (_) => LiveScanScreen(controller: _controller),
+          fullscreenDialog: true,
+        ),
+      );
       if (!mounted) return;
-      if (index != null) await openDocumentEdges(context, _controller, index);
+      if (useSystemCamera == true) {
+        final index = await _controller.addFromCamera();
+        if (!mounted) return;
+        if (index != null) await openDocumentEdges(context, _controller, index);
+      }
     } else {
       // Bulk imports are straightened automatically; uncertain pages can be
       // adjusted later with the Edges tool.

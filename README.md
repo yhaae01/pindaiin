@@ -7,13 +7,18 @@ All file processing happens on the device.
 ## Features
 
 **Scanner**
-- Capture pages with the system camera (one page per shot) or import several
-  photos at once.
+- Live preview scanning: incoming camera frames are analysed a few times per
+  second and the detected page outline is drawn over the preview in real time.
+- Capture pages with the shutter (always available) or turn on auto-capture
+  when the detected quad is stable. Pages accumulate in the batch; the system
+  camera remains a fallback when the in-app camera cannot open.
 - Automatic document edge detection: the paper sheet is found, the page is
   perspective-warped (deskewed) and everything outside it — desk, hands,
-  surroundings — is cropped away.
+  surroundings — is cropped away. Captures are taken at full photo resolution,
+  not from the preview frames.
 - Adjust edges: a zoomed preview with four draggable corner handles, so a
-  missed or low-contrast detection can be fixed before the warp is applied.
+  missed or low-contrast detection can be fixed right after an uncertain
+  capture (offered in the live scanner) or later from the batch editor.
 - Batch editor: reorder by dragging, rotate left/right, fine-crop with corner
   handles, apply Original / Grayscale / Document filters, and re-adjust the
   perspective from the untouched original at any time.
@@ -45,6 +50,10 @@ lib/
 │   │   ├── document_corners.dart       # normalized 4-corner page quad
 │   │   ├── document_detector.dart      # DocumentDetector interface + result
 │   │   ├── edge_document_detector.dart # Otsu mask → largest blob → quad
+│   │   ├── luma_frame.dart             # grayscale camera frame value type
+│   │   ├── live_scan.dart              # live config, update, smoothing/stability
+│   │   ├── live_document_detector.dart # throttled isolate-backed live detector
+│   │   ├── preview_mapping.dart        # frame → preview viewport/rotation math
 │   │   ├── perspective_transform.dart  # 3x3 homography (unit square → quad)
 │   │   ├── perspective_warper.dart     # PerspectiveWarper interface + warp
 │   │   └── document_processor.dart     # facade: detect + warp by file path
@@ -72,12 +81,14 @@ lib/
 │   ├── utils/formatters.dart
 │   └── widgets/
 │       ├── scan_page_image.dart  # rotation/crop/filter preview painter
+│       ├── live_quad_overlay.dart  # real-time contour/corner overlay
 │       ├── document_quad_overlay.dart  # draggable 4-corner page handles
 │       ├── crop_overlay.dart     # interactive crop handles
 │       └── status_views.dart     # empty/error/busy states, dialogs
 └── features/
     ├── home/home_shell.dart
     ├── scanner/                  # controller, capture screen, edge editor, batch editor, crop, sheets
+    │   └── live_scan/            # live camera controller/screen + YUV/BGRA frame conversion
     ├── files/                    # controller, list, preview
     └── converter/                # controller, screen
 ```
@@ -93,7 +104,8 @@ separate: no widget touches the filesystem or a plugin directly.
 | `hive_ce` + `hive_ce_flutter` | Fast key/value metadata store. Community fork with current Flutter support. JSON strings avoid adapters/codegen. |
 | `path_provider` | App-private `documents`/`cache` directories (scoped storage friendly). |
 | `path` | Safe path joining and extension handling. |
-| `image_picker` | Camera capture and multi-photo gallery import. |
+| `camera` | Live preview, image stream for real-time edge detection, and high-resolution capture. |
+| `image_picker` | System-camera fallback and multi-photo gallery import. |
 | `file_picker` | System document picker for the converter (SAF on Android). |
 | `image` | Decode/rotate/crop/filter/encode off the UI thread. |
 | `pdf` | Writes merged multi-page PDFs with JPEG-compressed pages. |
@@ -110,6 +122,20 @@ separate: no widget touches the filesystem or a plugin directly.
 **Non-destructive editing.** A `ScanPage` stores `quarterTurns`, a crop `Rect`
 normalized to the *rotated* page, and a filter. Rotating a page also rotates its
 crop, so the visible region stays put. Nothing is re-encoded while editing.
+
+**Live preview detection.** While the live scanner is open,
+`CameraController.startImageStream` delivers preview frames.
+`features/scanner/live_scan/camera_frame.dart` keeps only the luminance plane
+(YUV420/NV21 on Android, BGRA8888 on iOS) and resamples it to ~400 px, so no JPEG
+is decoded per frame. `LiveDocumentDetector` owns a long-lived worker isolate and
+runs the same detector as still photos. At most one frame is in flight and
+submissions are capped at 6 fps; extra frames are dropped rather than queued,
+which is what keeps the preview smooth and the phone cool. Corners are rotated
+into the displayed orientation (`preview_mapping.dart`) and smoothed by
+`LiveScanTracker`, which marks the quad `stable` only after several consistent
+frames — auto-capture waits for that flag. `LiveQuadOverlay` maps the quad through
+the same `BoxFit.cover` geometry as the preview, so it stays on the paper at any
+device rotation and screen size.
 
 **Document capture and deskew.** Capturing a page goes through four stages:
 
@@ -132,10 +158,12 @@ crop, so the visible region stays put. Nothing is re-encoded while editing.
    "Edges" can start over without compounding quality loss.
 
 Gallery imports are straightened headlessly during import (uncertain pages are
-left untouched); camera captures always open the edge editor. The detector and
-warper only meet at `DocumentProcessor`, constructed in
-`AppServices.bootstrap()` — swapping either interface changes no widget or
-controller.
+left untouched). Live-scanner captures are detected and warped immediately;
+when detection is uncertain the live screen offers an **Adjust** action, and the
+batch editor's **Edges** tool is always available. System-camera fallbacks still
+open the edge editor. The detector and warper only meet at `DocumentProcessor`,
+constructed in `AppServices.bootstrap()` — swapping either interface changes no
+widget or controller.
 
 **Export pipeline** (`ImageProcessor`, in an isolate):
 `bake EXIF orientation → downscale to ≤3000 px → rotate → crop → filter → encode`.
@@ -203,10 +231,12 @@ desktop/web are not targeted because `pdfx`/`image_picker` are mobile plugins.
 - **Internet:** `INTERNET` is declared for the optional Office conversion
   backend only. Scans, image/PDF conversions and the file hub work offline; use
   HTTPS (release builds block cleartext traffic).
-- **Camera:** no `CAMERA` permission is declared. `image_picker` launches the
-  system camera app through an intent and receives the resulting photo, so
-  declaring `CAMERA` would force a runtime permission prompt (and break the
-  intent on some devices). The camera app handles its own permission.
+- **Camera:** `CAMERA` is declared for the in-app live scanner (camera plugin).
+  The app requests it at runtime when the live scanner opens. The image stream
+  is analysed on the device only; no frame leaves the phone. `uses-feature` for
+  the camera is `required="false"` so the app still installs on devices without
+  one, and the system-camera fallback (`image_picker`, which uses its own
+  permission flow) remains available if the in-app camera is denied.
 - **Storage:** files stay in `getApplicationDocumentsDirectory()` (app-private)
   and `getCacheDirectory()`. No `READ/WRITE_EXTERNAL_STORAGE` or
   `MANAGE_EXTERNAL_STORAGE` is needed on Android 10+ (scoped storage).
@@ -255,6 +285,23 @@ desktop/web are not targeted because `pdfx`/`image_picker` are mobile plugins.
 15. **DOCX/XLSX output:** after PDF→Word/Excel, tap the result in Files and use
     "Open with" to confirm the device's Office app can open it (demo backend
     produces valid placeholder packages).
+16. **Live overlay alignment:** hold a page at an angle, then turn the phone
+    through all four orientations. The outline must stay on the paper (this is
+    the camera-frame → preview rotation and `BoxFit.cover` mapping). Also test
+    on a 16:9 and a 20:9 screen, where the preview crop differs.
+17. **Low contrast / one bright surface:** scan white paper on a white desk and
+    a page in shadow. The overlay should turn amber (low confidence) rather than
+    guess silently; manual shutter plus Adjust must recover the page.
+18. **Auto-capture:** enable it, hold a page still (one capture), slide the next
+    page in (it should re-arm), and wiggle the phone (no capture while moving).
+    With auto off, the shutter must always work.
+19. **Thermal / frame rate:** run the live scanner for 5+ minutes on a mid-range
+    Android phone. The preview should stay smooth; frames are dropped, not
+    queued, so latency must not grow. Watch battery/heat and raise the analysis
+    size only if needed.
+20. **Camera denied:** deny the camera permission when the live scanner opens,
+    then use "Use system camera". The batch must still accept pages and the
+    permission error must be readable, not a crash.
 
 ## Known limitations
 
@@ -267,7 +314,14 @@ desktop/web are not targeted because `pdfx`/`image_picker` are mobile plugins.
 - Edge detection is heuristic: it assumes a bright sheet on a contrasting
   background. One-bright-surface scenes and very low contrast fall back to the
   full frame and rely on the manual corner handles. There is no shadow removal
-  or curvature correction yet.
+  or curvature correction yet. The live overlay makes uncertainty visible
+  (amber) but cannot invent edges that are not there.
+- Live detection runs on the CPU in a Dart isolate. On devices where the camera
+  plugin cannot start an image stream (or while another app holds the camera),
+  the scanner shows a warning and keeps manual capture working, but the overlay
+  has nothing to draw. "High resolution" capture uses `ResolutionPreset.veryHigh`
+  (1080p-class); raise it in `LiveScanController` if the target devices handle
+  the extra capture size.
 - The perspective warp runs in pure Dart (isolate). A native/OpenCV
   implementation can replace `PerspectiveWarper` without touching the UI.
 - PDF page preview uses a single page at a time by design; continuous scrolling
