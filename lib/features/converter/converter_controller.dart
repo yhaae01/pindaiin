@@ -160,12 +160,19 @@ class ConverterController extends ChangeNotifier {
     }
   }
 
-  Future<void> shareOutputs() async {
+  /// Keeps the inline result card in sync after a rename.
+  void replaceOutput(ScannedFile updated) {
+    final index = _outputs.indexWhere((file) => file.id == updated.id);
+    if (index < 0) return;
+    _outputs[index] = updated;
+    notifyListeners();
+  }
+
+  /// Dismisses the result card without touching the source selection.
+  void dismissResult() {
     if (_outputs.isEmpty) return;
-    await services.fileAccess.shareFiles(
-      _outputs.map((file) => file.path).toList(growable: false),
-      subject: _outputs.first.name,
-    );
+    _outputs = [];
+    notifyListeners();
   }
 
   /// Files from the hub that fit the current mode (rendered newest first).

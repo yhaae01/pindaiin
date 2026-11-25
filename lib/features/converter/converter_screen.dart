@@ -5,6 +5,7 @@ import '../../core/models/conversion.dart';
 import '../../core/models/scanned_file.dart';
 import '../../core/services/file_repository.dart';
 import '../../core/utils/formatters.dart';
+import '../../core/widgets/result_summary_card.dart';
 import '../../core/widgets/status_views.dart';
 import '../files/file_preview_screen.dart';
 import 'converter_controller.dart';
@@ -217,14 +218,20 @@ class ConverterScreen extends StatelessWidget {
               ),
               if (controller.outputs.isNotEmpty) ...[
                 const SizedBox(height: 20),
-                _ResultCard(
-                  outputs: controller.outputs,
-                  onShare: controller.shareOutputs,
-                  onOpenFiles: onOpenFiles,
-                  onPreview: () => Navigator.of(context).push(
+                ResultSummaryCard(
+                  title: 'Conversion complete',
+                  message: 'Saved to the Files tab on this device.',
+                  files: controller.outputs,
+                  totalPageCount: controller.outputs.fold<int>(
+                    0,
+                    (sum, file) => sum + (file.pageCount ?? 1),
+                  ),
+                  onViewFiles: onOpenFiles,
+                  onDone: controller.dismissResult,
+                  onFileRenamed: controller.replaceOutput,
+                  onPreview: (file) => Navigator.of(context).push(
                     MaterialPageRoute<void>(
-                      builder: (_) =>
-                          FilePreviewScreen(file: controller.outputs.first),
+                      builder: (_) => FilePreviewScreen(file: file),
                     ),
                   ),
                 ),
@@ -324,90 +331,6 @@ class _NoticeCard extends StatelessWidget {
               message,
               style: TextStyle(color: scheme.onSecondaryContainer),
             ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _ResultCard extends StatelessWidget {
-  const _ResultCard({
-    required this.outputs,
-    required this.onShare,
-    required this.onOpenFiles,
-    required this.onPreview,
-  });
-
-  final List<ScannedFile> outputs;
-  final Future<void> Function() onShare;
-  final VoidCallback onOpenFiles;
-  final VoidCallback onPreview;
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: scheme.primaryContainer,
-        borderRadius: BorderRadius.circular(16),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Icon(Icons.check_circle_outline, color: scheme.onPrimaryContainer),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  'Created ${outputs.length} file${outputs.length == 1 ? '' : 's'}',
-                  style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                    color: scheme.onPrimaryContainer,
-                  ),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 8),
-          ...outputs.take(4).map(
-            (file) => Padding(
-              padding: const EdgeInsets.only(bottom: 2),
-              child: Text(
-                file.name,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(color: scheme.onPrimaryContainer),
-              ),
-            ),
-          ),
-          if (outputs.length > 4)
-            Text(
-              '+ ${outputs.length - 4} more',
-              style: TextStyle(color: scheme.onPrimaryContainer),
-            ),
-          const SizedBox(height: 10),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: [
-              OutlinedButton.icon(
-                onPressed: onPreview,
-                icon: const Icon(Icons.visibility_outlined),
-                label: const Text('Open'),
-              ),
-              OutlinedButton.icon(
-                onPressed: onShare,
-                icon: const Icon(Icons.share_outlined),
-                label: const Text('Share'),
-              ),
-              FilledButton.tonalIcon(
-                onPressed: onOpenFiles,
-                icon: const Icon(Icons.folder_outlined),
-                label: const Text('View in Files'),
-              ),
-            ],
           ),
         ],
       ),

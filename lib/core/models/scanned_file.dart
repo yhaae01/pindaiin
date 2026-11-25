@@ -19,6 +19,25 @@ extension FileKindX on FileKind {
 /// Where a record came from. Kept for future filtering/analytics.
 enum FileOrigin { scan, conversion, import }
 
+/// Quick filters shown as chips in the file hub.
+enum FileHubFilter {
+  all('All'),
+  scans('Scans'),
+  pdfs('PDFs'),
+  converted('Converted');
+
+  const FileHubFilter(this.label);
+
+  final String label;
+
+  bool matches(ScannedFile file) => switch (this) {
+    FileHubFilter.all => true,
+    FileHubFilter.scans => file.origin == FileOrigin.scan,
+    FileHubFilter.pdfs => file.kind == FileKind.pdf,
+    FileHubFilter.converted => file.origin == FileOrigin.conversion,
+  };
+}
+
 FileKind fileKindFromPath(String path) {
   return switch (p.extension(path).toLowerCase()) {
     '.pdf' => FileKind.pdf,

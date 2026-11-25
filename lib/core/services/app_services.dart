@@ -98,6 +98,25 @@ class AppServices {
     return file;
   }
 
+  /// Renames a registered file on disk and in the metadata store.
+  ///
+  /// Shared by the file hub and the post-scan/post-conversion summaries so the
+  /// rename rules (sanitizing, keeping the extension, collision errors) live in
+  /// one place. Throws when the target name already exists.
+  Future<ScannedFile> renameFile(ScannedFile file, String rawName) async {
+    var name = storage.sanitizeFileName(rawName);
+    if (name.isEmpty) {
+      throw ArgumentError('The file name cannot be empty.');
+    }
+    if (p.extension(name).isEmpty && file.extension.isNotEmpty) {
+      name = '$name${file.extension}';
+    }
+    final newPath = await storage.rename(file.path, name);
+    final updated = file.copyWith(name: name, path: newPath);
+    await repository.save(updated);
+    return updated;
+  }
+
   /// Creates a fresh working folder for one scan session.
   Future<Directory> createSessionDirectory() async {
     final dir = Directory(

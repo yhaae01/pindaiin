@@ -322,8 +322,14 @@ class ScanController extends ChangeNotifier {
   }
 
   void rotateCurrent({bool clockwise = true}) {
-    final index = currentIndex;
     if (_pages.isEmpty) return;
+    rotatePage(currentIndex, clockwise: clockwise);
+  }
+
+  /// Rotates one page without changing the selection (used by the thumbnail
+  /// strip's quick actions).
+  void rotatePage(int index, {bool clockwise = true}) {
+    if (index < 0 || index >= _pages.length) return;
     _pages[index] = clockwise
         ? _pages[index].rotatedClockwise()
         : _pages[index].rotatedCounterClockwise();
@@ -349,6 +355,8 @@ class ScanController extends ChangeNotifier {
   void removePage(int index) {
     if (index < 0 || index >= _pages.length) return;
     _pages.removeAt(index);
+    // Keep the same page selected when deleting an earlier one.
+    if (index < _currentIndex) _currentIndex--;
     _currentIndex = _currentIndex.clamp(0, _pages.isEmpty ? 0 : _pages.length - 1);
     _notify();
   }

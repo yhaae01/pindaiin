@@ -21,13 +21,18 @@ All file processing happens on the device.
   capture (offered in the live scanner) or later from the batch editor.
 - Batch editor: reorder by dragging, rotate left/right, fine-crop with corner
   handles, apply Original / Grayscale / Document filters, and re-adjust the
-  perspective from the untouched original at any time.
+  perspective from the untouched original at any time. The thumbnail strip has
+  a quick-actions menu per page (rotate left/right, recrop, delete) so a sheet
+  can be fixed without selecting it first.
 - Export the batch as one multi-page PDF (quality presets) or one JPG/PNG per
-  page. Exported files are registered in the file hub immediately.
+  page. Exported files are registered in the file hub immediately, then shown
+  in a summary with name, size, page count, rename, Share, Open and Done.
 
 **File hub**
 - History of every exported/converted file with search, rename, preview, share,
-  "open with", and delete.
+  "open with", and delete. Filter chips switch between All, Scans, PDFs and
+  Converted; every row has a one-tap Share button in addition to the overflow
+  menu.
 - In-app preview: zoomable images and page-by-page PDF rendering.
 - Metadata persisted in Hive; bytes live in app-private storage.
 
@@ -38,6 +43,8 @@ All file processing happens on the device.
   `OfficeConversionRepository`. Ships with a simulated demo backend and a REST
   client ready for a self-hosted renderer. Upload/download progress, validation
   (extension + 25 MB limit), timeouts and user-safe errors are handled.
+- Every conversion ends in a result card with the output name, size, page
+  count, Rename, Share (one or many files), Open and Done.
 
 ## Project structure
 
@@ -84,6 +91,8 @@ lib/
 │       ├── live_quad_overlay.dart  # real-time contour/corner overlay
 │       ├── document_quad_overlay.dart  # draggable 4-corner page handles
 │       ├── crop_overlay.dart     # interactive crop handles
+│       ├── result_summary_card.dart  # post-scan/convert summary + share/open
+│       ├── rename_dialog.dart    # shared rename prompt
 │       └── status_views.dart     # empty/error/busy states, dialogs
 └── features/
     ├── home/home_shell.dart
@@ -171,6 +180,15 @@ JPEG quality comes from the preset (45/70/90). PNG export skips quality but
 still bakes all edits. A PDF is built from the rendered JPEG pages, so the PDF
 matches the preview exactly.
 
+**Sharing and opening.** `FileAccessService` is the only place that talks to
+`share_plus`/`open_filex`. `shareFiles` checks that each path still exists and
+is non-empty, attaches the extension's MIME type and returns a `ShareOutcome`
+(shared count + skipped paths) or throws a `ShareException` with a snackbar-ready
+message. The reusable `ResultSummaryCard` powers both the post-scan sheet and
+the converter result, and the file hub calls the same service, so single-file,
+multi-image and document sharing all follow one validated path. Opening is also
+routed through the service, which maps `open_filex` failures to readable errors.
+
 **Preview** (`ScanPageImage`): decodes at a bounded width, paints with
 `Canvas.drawImageRect` using a source rect derived from the rotation
 (90°/270° swap axes), plus a `ColorFilter.matrix` for Grayscale/Document.
@@ -246,7 +264,14 @@ desktop/web are not targeted because `pdfx`/`image_picker` are mobile plugins.
   a `<queries>` entry for `ACTION_VIEW` with `*/*`; without it, "Open with"
   silently fails on Android 11+.
 - **Sharing:** `share_plus` uses a FileProvider configured by the plugin; no
-  extra permission or manifest entry is required.
+  extra permission or manifest entry is required. `FileAccessService` validates
+  each path (exists and non-empty), attaches the MIME type for the extension
+  (`application/pdf`, `image/jpeg`, `image/png`, Office types, …) and passes
+  app-private file paths to the provider. Receivers such as WhatsApp, Gmail,
+  Drive or Bluetooth get a proper content URI, so no storage permission is
+  needed. Paths are never `file://` URIs and are not exposed outside the
+  provider. Missing/unreadable files are skipped with a snackbar instead of a
+  broken share intent.
 - iOS would need `NSCameraUsageDescription` and `NSPhotoLibraryUsageDescription`
   in `Info.plist` if you build for iOS.
 
@@ -269,8 +294,10 @@ desktop/web are not targeted because `pdfx`/`image_picker` are mobile plugins.
    open it from the hub. Preview shows a clear "file not found" state.
 8. **Storage full:** export a large batch with little free space. Errors must
    surface as a snackbar, not a crash.
-9. **Share sheets:** share a PDF and multiple JPGs to Gmail/Drive/WhatsApp; check
-   file names and that every file arrives.
+9. **Share sheets:** share a PDF and multiple JPGs to Gmail/Drive/WhatsApp and
+   Bluetooth; check file names, MIME handling and that every file arrives. Share
+   from the export summary, the converter result, a file row and the preview
+   screen.
 10. **Back navigation:** leave the editor with unsaved pages, rotate the device,
     background the app during export, then return.
 11. **Permission denial:** deny camera in the system camera app; the batch should
@@ -302,6 +329,19 @@ desktop/web are not targeted because `pdfx`/`image_picker` are mobile plugins.
 20. **Camera denied:** deny the camera permission when the live scanner opens,
     then use "Use system camera". The batch must still accept pages and the
     permission error must be readable, not a crash.
+21. **Multi-file share:** export a batch as images and share all pages at once;
+    repeat from the converter result. Every image must arrive and the receiving
+    app must treat them as images (not generic files).
+22. **Missing file share:** delete an export with a file manager, then tap Share
+    on its hub row. Expect a clear "missing/empty" message, not a crash or an
+    empty chooser.
+23. **Hub filters:** with scans, PDFs and converted files present, switch chips
+    and combine them with a search term. Counts and empty states must stay
+    accurate; "Show all files" must reset both.
+24. **Thumbnail quick actions:** in the batch strip, rotate, recrop and delete a
+    page that is not selected. The large preview, page numbering and exported
+    order must update correctly; deleting the last page must leave the editor
+    cleanly.
 
 ## Known limitations
 

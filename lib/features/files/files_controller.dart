@@ -1,11 +1,10 @@
 import 'package:flutter/foundation.dart';
 import 'package:open_filex/open_filex.dart' show ResultType;
-import 'package:path/path.dart' as p;
 
 import '../../core/models/scanned_file.dart';
 import '../../core/services/app_services.dart';
+import '../../core/services/file_access_service.dart';
 import '../../core/services/file_repository.dart';
-import '../../core/utils/formatters.dart';
 
 /// View-model for the file hub: search, rename, delete and share.
 ///
@@ -22,28 +21,46 @@ class FilesController extends ChangeNotifier {
   final FileRepository _repository;
 
   String _query = '';
+  FileHubFilter _filter = FileHubFilter.all;
   bool _busy = false;
   String? _error;
 
   String get query => _query;
+  FileHubFilter get filter => _filter;
   bool get isBusy => _busy;
   String? get error => _error;
 
-  /// Newest first, filtered by the current search query.
+  /// Newest first, filtered by the selected chip and then the search query.
   List<ScannedFile> get files {
-    final all = _repository.files;
     final query = _query.trim().toLowerCase();
-    if (query.isEmpty) return all;
-    return all
-        .where((file) => file.name.toLowerCase().contains(query))
-        .toList(growable: false);
+    return _repository.files.where((file) {
+      if (!_filter.matches(file)) return false;
+      if (query.isEmpty) return true;
+      return file.name.toLowerCase().contains(query);
+    }).toList(growable: false);
   }
 
   int get totalCount => _repository.files.length;
 
+  int countFor(FileHubFilter filter) =>
+      _repository.files.where(filter.matches).length;
+
   void setQuery(String value) {
     if (_query == value) return;
     _query = value;
+    notifyListeners();
+  }
+
+  void setFilter(FileHubFilter value) {
+    if (_filter == value) return;
+    _filter = value;
+    notifyListeners();
+  }
+
+  void clearFilters() {
+    if (_query.isEmpty && _filter == FileHubFilter.all) return;
+    _query = '';
+    _filter = FileHubFilter.all;
     notifyListeners();
   }
 
@@ -53,20 +70,13 @@ class FilesController extends ChangeNotifier {
   }
 
   Future<void> rename(ScannedFile file, String rawName) async {
-    var name = _services.storage.sanitizeFileName(rawName);
-    if (name.isEmpty) return;
-    if (p.extension(name).isEmpty && file.extension.isNotEmpty) {
-      name = Formatters.withExtension(name, file.extension.replaceFirst('.', ''));
-    }
-
     _setBusy(true);
     try {
-      final newPath = await _services.storage.rename(file.path, name);
-      await _repository.save(file.copyWith(name: name, path: newPath));
+      await _services.renameFile(file, rawName);
       _error = null;
     } catch (error) {
       _error = error is Exception && error.toString().contains('already exists')
-          ? 'A file named "$name" already exists.'
+          ? 'A file named "${rawName.trim()}" already exists.'
           : 'Rename failed: ${_clean(error)}';
     } finally {
       _setBusy(false);
@@ -86,7 +96,21 @@ class FilesController extends ChangeNotifier {
 
   Future<void> share(ScannedFile file) async {
     try {
-      await _services.fileAccess.shareFiles([file.path], subject: file.name);
+      final outcome = await _services.fileAccess.shareFiles(
+        [file.path],
+        subject: file.name,
+      );
+      if (outcome.hasSkipped) {
+        _error =
+            'The file is missing or empty, so it could not be shared. '
+            'Export it again if needed.';
+      } else {
+        _error = null;
+      }
+      notifyListeners();
+    } on ShareException catch (error) {
+      _error = error.message;
+      notifyListeners();
     } catch (error) {
       _error = 'Could not open the share sheet: ${_clean(error)}';
       notifyListeners();

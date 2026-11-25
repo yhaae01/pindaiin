@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 
 import '../../core/models/scanned_file.dart';
 import '../../core/utils/formatters.dart';
+import '../../core/widgets/rename_dialog.dart';
 import '../../core/widgets/status_views.dart';
 import 'file_preview_screen.dart';
 import 'files_controller.dart';
@@ -70,7 +71,7 @@ class _FilesScreenState extends State<FilesScreen> {
         children: [
           if (controller.totalCount > 0)
             Padding(
-              padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
+              padding: const EdgeInsets.fromLTRB(16, 4, 16, 10),
               child: TextField(
                 controller: _search,
                 onChanged: controller.setQuery,
@@ -88,6 +89,28 @@ class _FilesScreenState extends State<FilesScreen> {
                 ),
               ),
             ),
+          if (controller.totalCount > 0)
+            SizedBox(
+              height: 44,
+              child: ListView.separated(
+                scrollDirection: Axis.horizontal,
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                itemCount: FileHubFilter.values.length,
+                separatorBuilder: (_, _) => const SizedBox(width: 8),
+                itemBuilder: (context, index) {
+                  final filter = FileHubFilter.values[index];
+                  final count = controller.countFor(filter);
+                  return ChoiceChip(
+                    label: Text(
+                      count > 0 ? '${filter.label} $count' : filter.label,
+                    ),
+                    selected: controller.filter == filter,
+                    onSelected: (_) => controller.setFilter(filter),
+                  );
+                },
+              ),
+            ),
+          const SizedBox(height: 4),
           if (controller.error != null)
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
@@ -114,10 +137,16 @@ class _FilesScreenState extends State<FilesScreen> {
                 ? EmptyState(
                     icon: Icons.search_off,
                     title: 'No matches',
-                    message: 'Nothing matches "${controller.query}".',
+                    message: controller.query.isNotEmpty
+                        ? 'Nothing matches "${controller.query}" in '
+                              '${controller.filter.label}.'
+                        : 'No ${controller.filter.label.toLowerCase()} files yet.',
                     action: TextButton(
-                      onPressed: () => _updateQuery(controller, ''),
-                      child: const Text('Clear search'),
+                      onPressed: () {
+                        _updateQuery(controller, '');
+                        controller.clearFilters();
+                      },
+                      child: const Text('Show all files'),
                     ),
                   )
                 : ListView.separated(
@@ -156,37 +185,8 @@ class _FileTile extends StatelessWidget {
   }
 
   Future<void> _rename(BuildContext context) async {
-    final input = TextEditingController(text: file.name);
-    input.selection = TextSelection(
-      baseOffset: 0,
-      extentOffset: Formatters.baseName(file.name).length,
-    );
-    final name = await showDialog<String>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Rename file'),
-        content: TextField(
-          controller: input,
-          autofocus: true,
-          decoration: const InputDecoration(labelText: 'File name'),
-          onSubmitted: (value) => Navigator.of(context).pop(value),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(context).pop(input.text),
-            child: const Text('Rename'),
-          ),
-        ],
-      ),
-    );
-    input.dispose();
-    if (name != null && name.trim().isNotEmpty) {
-      await controller.rename(file, name);
-    }
+    final name = await showRenameFileDialog(context, currentName: file.name);
+    if (name != null) await controller.rename(file, name);
   }
 
   Future<void> _delete(BuildContext context) async {
@@ -254,6 +254,11 @@ class _FileTile extends StatelessWidget {
                     ),
                   ],
                 ),
+              ),
+              IconButton(
+                tooltip: 'Share',
+                onPressed: () => controller.share(file),
+                icon: const Icon(Icons.share_outlined),
               ),
               PopupMenuButton<String>(
                 tooltip: 'File actions',

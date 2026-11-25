@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
 
-import '../../core/services/app_services.dart';
+import '../../core/widgets/result_summary_card.dart';
 import '../../core/widgets/scan_page_image.dart';
+import '../files/file_preview_screen.dart';
 import '../../core/widgets/status_views.dart';
 import 'crop_screen.dart';
 import 'document_edges_screen.dart';
@@ -28,9 +28,13 @@ class _BatchEditorScreenState extends State<BatchEditorScreen> {
   ScanController get _controller => widget.controller;
 
   Future<void> _openCrop() async {
-    final page = _controller.currentPage;
-    if (page == null) return;
-    final index = _controller.currentIndex;
+    if (_controller.isEmpty) return;
+    await _openCropFor(_controller.currentIndex);
+  }
+
+  Future<void> _openCropFor(int index) async {
+    if (index < 0 || index >= _controller.pageCount) return;
+    final page = _controller.pages[index];
     final crop = await Navigator.of(context).push<Rect>(
       MaterialPageRoute(
         builder: (_) => CropScreen(page: page),
@@ -38,6 +42,61 @@ class _BatchEditorScreenState extends State<BatchEditorScreen> {
       ),
     );
     if (crop != null) _controller.setCrop(index, crop);
+  }
+
+  /// Quick actions on a thumbnail: rotate, recrop or delete that page without
+  /// having to select it first.
+  Future<void> _openPageActions(int index) async {
+    if (index < 0 || index >= _controller.pageCount) return;
+    final action = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.rotate_left),
+              title: Text('Rotate page ${index + 1} left'),
+              onTap: () => Navigator.of(context).pop('left'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.rotate_right),
+              title: Text('Rotate page ${index + 1} right'),
+              onTap: () => Navigator.of(context).pop('right'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.crop),
+              title: const Text('Recrop'),
+              onTap: () => Navigator.of(context).pop('crop'),
+            ),
+            ListTile(
+              leading: Icon(
+                Icons.delete_outline,
+                color: Theme.of(context).colorScheme.error,
+              ),
+              title: Text(
+                'Delete page ${index + 1}',
+                style: TextStyle(color: Theme.of(context).colorScheme.error),
+              ),
+              onTap: () => Navigator.of(context).pop('delete'),
+            ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+    if (!mounted || action == null) return;
+    switch (action) {
+      case 'left':
+        _controller.rotatePage(index, clockwise: false);
+      case 'right':
+        _controller.rotatePage(index);
+      case 'crop':
+        await _openCropFor(index);
+      case 'delete':
+        await _deletePage(index);
+    }
   }
 
   Future<void> _openEdges() async {
@@ -105,8 +164,12 @@ class _BatchEditorScreenState extends State<BatchEditorScreen> {
   }
 
   Future<void> _deleteCurrent() async {
-    final index = _controller.currentIndex;
     if (_controller.isEmpty) return;
+    await _deletePage(_controller.currentIndex);
+  }
+
+  Future<void> _deletePage(int index) async {
+    if (index < 0 || index >= _controller.pageCount) return;
     final confirmed = await confirmDialog(
       context,
       title: 'Delete page?',
@@ -144,41 +207,27 @@ class _BatchEditorScreenState extends State<BatchEditorScreen> {
   }
 
   Future<void> _showSuccess(ScanExportResult result) async {
-    final paths = result.files.map((file) => file.path).toList(growable: false);
-    final message = result.isPdf
-        ? 'PDF saved to the Files tab (${_controller.pageCount} pages).'
-        : '${paths.length} image${paths.length == 1 ? '' : 's'} saved to the '
-              'Files tab.';
-
-    final share = await showDialog<bool>(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) => AlertDialog(
-        icon: const Icon(Icons.check_circle_outline),
-        title: const Text('Export complete'),
-        content: Text(message),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('Share'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('Done'),
-          ),
-        ],
+    final action = await showResultSummarySheet(
+      context,
+      title: result.isPdf ? 'PDF saved' : 'Images saved',
+      message: result.isPdf
+          ? 'Your multi-page PDF is in the Files tab.'
+          : '${result.files.length} image'
+                '${result.files.length == 1 ? '' : 's'} saved in the Files tab.',
+      files: result.files,
+      totalPageCount: _controller.pageCount,
+      onPreview: (file) => Navigator.of(context).push(
+        MaterialPageRoute<void>(
+          builder: (_) => FilePreviewScreen(file: file),
+        ),
       ),
     );
 
-    if (share == true && mounted) {
-      await context.read<AppServices>().fileAccess.shareFiles(
-        paths,
-        subject: result.files.isEmpty ? null : result.files.first.name,
-      );
-    }
-    if (mounted) {
-      Navigator.of(context).popUntil((route) => route.isFirst);
-    }
+    // Done and View in Files both return to the hub, where the new records are
+    // at the top. Dragging the sheet away leaves the batch open for another
+    // export.
+    if (!mounted || action == null) return;
+    Navigator.of(context).popUntil((route) => route.isFirst);
   }
 
   @override
@@ -247,11 +296,37 @@ class _BatchEditorScreenState extends State<BatchEditorScreen> {
                               horizontal: 4,
                               vertical: 6,
                             ),
-                            child: PageThumbnail(
-                              page: item,
-                              index: index,
-                              selected: index == _controller.currentIndex,
-                              onTap: () => _controller.select(index),
+                            child: Stack(
+                              children: [
+                                PageThumbnail(
+                                  page: item,
+                                  index: index,
+                                  selected: index == _controller.currentIndex,
+                                  onTap: () => _controller.select(index),
+                                ),
+                                Positioned(
+                                  top: 0,
+                                  right: 0,
+                                  child: Material(
+                                    color: Colors.black.withValues(alpha: 0.55),
+                                    shape: const CircleBorder(),
+                                    clipBehavior: Clip.antiAlias,
+                                    child: InkWell(
+                                      customBorder: const CircleBorder(),
+                                      onTap: () => _openPageActions(index),
+                                      child: const SizedBox(
+                                        width: 30,
+                                        height: 30,
+                                        child: Icon(
+                                          Icons.more_horiz,
+                                          size: 19,
+                                          color: Colors.white,
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ],
                             ),
                           );
                         },

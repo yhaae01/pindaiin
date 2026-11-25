@@ -8,6 +8,7 @@ import 'package:provider/provider.dart';
 
 import '../../core/models/scanned_file.dart';
 import '../../core/services/app_services.dart';
+import '../../core/services/file_access_service.dart';
 import '../../core/widgets/status_views.dart';
 
 /// In-app preview: images render directly, PDFs page by page (pdfx cannot
@@ -18,10 +19,25 @@ class FilePreviewScreen extends StatelessWidget {
   final ScannedFile file;
 
   Future<void> _share(BuildContext context) async {
-    await context.read<AppServices>().fileAccess.shareFiles(
-      [file.path],
-      subject: file.name,
-    );
+    try {
+      final outcome = await context.read<AppServices>().fileAccess.shareFiles(
+        [file.path],
+        subject: file.name,
+      );
+      if (!context.mounted) return;
+      if (outcome.hasSkipped) {
+        showSnack(
+          context,
+          'The file is missing or empty, so it could not be shared.',
+        );
+      }
+    } on ShareException catch (error) {
+      if (context.mounted) showSnack(context, error.message);
+    } catch (error) {
+      if (context.mounted) {
+        showSnack(context, 'Could not open the share sheet.');
+      }
+    }
   }
 
   Future<void> _openExternally(BuildContext context) async {
