@@ -16,6 +16,7 @@ import 'office/office_conversion_repository.dart';
 import 'office/repository_office_converter.dart';
 import 'office/rest_office_conversion_repository.dart';
 import 'pdf_converter.dart';
+import 'pdf_service.dart';
 
 /// Composition root: wires directories, storage, persistence and converters
 /// once at startup, then exposes them through `provider`.
@@ -28,6 +29,7 @@ class AppServices {
     required this.images,
     required this.documents,
     required this.pdf,
+    required this.pdfEditor,
     required this.converter,
   });
 
@@ -42,6 +44,10 @@ class AppServices {
   final DocumentProcessor documents;
 
   final PdfConverter pdf;
+
+  /// Reader/editor engine: metadata, rendering, text search and page edits.
+  final PdfService pdfEditor;
+
   final DocumentConverterService converter;
 
   /// `--dart-define=OFFICE_API_URL=https://convert.example.com` switches from
@@ -73,6 +79,7 @@ class AppServices {
       images: const ImageProcessor(),
       documents: DocumentProcessor(),
       pdf: pdf,
+      pdfEditor: PdfService(),
       converter: DocumentConverterService(pdf: pdf, office: office),
     );
   }

@@ -33,7 +33,8 @@ All file processing happens on the device.
   "open with", and delete. Filter chips switch between All, Scans, PDFs and
   Converted; every row has a one-tap Share button in addition to the overflow
   menu.
-- In-app preview: zoomable images and page-by-page PDF rendering.
+- In-app preview: zoomable images and a full PDF reader (page swiping,
+  zoom, jump slider, metadata, Share/Open and Edit).
 - Metadata persisted in Hive; bytes live in app-private storage.
 
 **Converter**
@@ -45,6 +46,24 @@ All file processing happens on the device.
   (extension + 25 MB limit), timeouts and user-safe errors are handled.
 - Every conversion ends in a result card with the output name, size, page
   count, Rename, Share (one or many files), Open and Done.
+
+**PDF reader & editor**
+- Reader: bounded-resolution page rendering with adjacent-page prefetch,
+  pinch zoom, swipe/prev-next/slider navigation, a file-information sheet
+  (size, pages, PDF version, metadata, encryption/tagging) and one-tap Share,
+  Open and Edit.
+- Page management: drag to reorder, rotate, and delete pages. Changes are
+  pending until save; the source is never touched unless the user explicitly
+  chooses **Overwrite original**.
+- Markup: text boxes, rectangular highlights, freehand ink, and image/signature
+  stamps. Colours and an undo-last-mark action are in the editor toolbar.
+- Text replacement: search the real text layer, redact the old run and stamp the
+  replacement at the same position. Scanned/image-only pages are detected and
+  offer a PDF → DOCX conversion instead.
+- Merge another PDF or extract selected pages into a new file. Every edit path
+  registers its output in the File Hub and can be shared immediately.
+- Password-protected PDFs prompt for a password; corrupt files show a retryable
+  error instead of a blank screen.
 
 ## Project structure
 
@@ -67,7 +86,9 @@ lib/
 │   ├── models/
 │   │   ├── scanned_file.dart     # metadata model + JSON + FileKind/FileOrigin
 │   │   ├── scan_page.dart        # page edits (rotation, crop, filter, source)
+│   │   ├── pdf_edit.dart         # page refs, marks, text replacements
 │   │   └── conversion.dart       # quality presets, modes, result types
+│   ├── pdf/pdf_geometry.dart     # rotation-aware normalized ↔ PDF coordinates
 │   ├── services/
 │   │   ├── app_services.dart     # composition root (singletons + file registry)
 │   │   ├── app_directories.dart  # app-private scans/exports/session folders
@@ -76,6 +97,7 @@ lib/
 │   │   ├── file_access_service.dart   # camera, gallery, SAF picker, share, open
 │   │   ├── image_processor.dart  # isolate export pipeline
 │   │   ├── pdf_converter.dart    # images→PDF and PDF→images (pdf/pdfx)
+│   │   ├── pdf_service.dart      # reader/editor engine: render, search, rewrite
 │   │   ├── office_converter.dart # interface used by the conversion service
 │   │   ├── office/
 │   │   │   ├── office_conversion_models.dart      # target, progress, errors
@@ -99,6 +121,7 @@ lib/
     ├── scanner/                  # controller, capture screen, edge editor, batch editor, crop, sheets
     │   └── live_scan/            # live camera controller/screen + YUV/BGRA frame conversion
     ├── files/                    # controller, list, preview
+    ├── pdf/                      # PDF reader + editor screens
     └── converter/                # controller, screen
 ```
 
@@ -118,7 +141,8 @@ separate: no widget touches the filesystem or a plugin directly.
 | `file_picker` | System document picker for the converter (SAF on Android). |
 | `image` | Decode/rotate/crop/filter/encode off the UI thread. |
 | `pdf` | Writes merged multi-page PDFs with JPEG-compressed pages. |
-| `pdfx` | Renders PDF pages for preview and PDF → images (platform PDFium). |
+| `pdfx` | Renders PDF pages for the converter's PDF → images path (platform PDFium). |
+| `pdf_manipulator` | Native, off-main-thread PDF toolkit: metadata, text search, page reorder/rotate/delete, redaction, stamps, merge/extract. Used by `PdfService`. |
 | `share_plus` | System share sheet for exported files. |
 | `open_filex` | "Open with" for arbitrary file types. |
 | `uuid` | Collision-free ids for files/pages/session folders. |
@@ -202,6 +226,34 @@ files are registered in Hive.
 controller only knows the service, so swapping the Office implementation does
 not change any widget.
 
+**PDF reader.** `PdfReaderScreen` owns one `PdfSession` (`PdfService.open`), so
+metadata and page reads reuse the parsed document instead of re-opening the
+file. Pages render at 1600 px once, are cached in a small 5-page window and
+prefetched one page ahead; rendering is serialized because the native engine
+shares one worker. The PageView provides swiping while each page has its own
+`InteractiveViewer` for pinch zoom. The session is disposed when the screen
+closes, which releases the native document and worker.
+
+**PDF editing.** The editor keeps page order/rotation in `PdfPageRef`, markup in
+`PdfMark` (normalized display coordinates) and search replacements in
+`PdfTextReplacement` (unrotated PDF points). No bytes change until Save.
+`PdfGeometry` maps between rotated screen space and unrotated PDF space; a page
+rotation remaps existing marks so they stay attached to the same content.
+On Save, `PdfService.saveEdits` performs one rewrite: redact old text runs and
+stamp replacements, add text/highlight/ink/image stamps, apply page order
+(which also drops deleted pages), then set each page's absolute rotation. The
+default output is a new `*_edited_*.pdf`; overwrite writes a temp file and only
+replaces the original after the rewrite succeeds, restoring the backup if the
+rename fails. Merge and Extract first write the current edits to a temp file, so
+they include unsaved changes, then produce and register a new PDF.
+
+**PDF failures.** `PdfService` maps engine exceptions to typed `PdfFailure`s:
+password required, wrong password, corrupted/incomplete, unsupported feature,
+I/O and unknown. The reader/editor show a password prompt, a retryable error or
+a snackbar accordingly. Scanned pages are classified with the engine's page
+classifier; text editing then redirects to PDF → DOCX instead of pretending the
+raster has editable text.
+
 ### Office conversion flow
 
 `OfficeConversionRepository` is the boundary. Two implementations ship:
@@ -263,6 +315,10 @@ desktop/web are not targeted because `pdfx`/`image_picker` are mobile plugins.
 - **Opening files:** `open_filex` needs package visibility. The manifest declares
   a `<queries>` entry for `ACTION_VIEW` with `*/*`; without it, "Open with"
   silently fails on Android 11+.
+- **PDF engine:** `pdf_manipulator` ships a prebuilt native engine through its
+  build hook; no Android permission or manifest change is needed. The hook
+  downloads the correct binary on the first build, and the engine adds to the
+  APK size. All PDF parsing/rewriting runs off the Dart UI isolate.
 - **Sharing:** `share_plus` uses a FileProvider configured by the plugin; no
   extra permission or manifest entry is required. `FileAccessService` validates
   each path (exists and non-empty), attaches the MIME type for the extension
@@ -342,6 +398,26 @@ desktop/web are not targeted because `pdfx`/`image_picker` are mobile plugins.
     page that is not selected. The large preview, page numbering and exported
     order must update correctly; deleting the last page must leave the editor
     cleanly.
+25. **PDF reader:** open a 50+ page PDF, swipe quickly, jump with the slider and
+    pinch-zoom. Adjacent pages should appear without blank flashes and memory
+    should stay flat (the render cache is capped at five pages).
+26. **PDF page edits:** reorder, rotate and delete pages, save as a new PDF,
+    then reopen and confirm the order/rotation. Check that deleting the last
+    remaining page is blocked.
+27. **PDF markup:** add text, highlight, ink and an image/signature stamp to a
+    rotated page. Save, reopen, and verify marks stay on the intended content.
+    Check multiple marks, colours and undo-last-mark.
+28. **PDF text replacement:** use a born-digital PDF, search a word, replace it
+    and save. The old word must be gone and the replacement visible. On a
+    scanned PDF, the editor must report no text layer and offer DOCX conversion.
+29. **PDF merge/extract:** make unsaved edits, merge another PDF, and extract a
+    selection. Both outputs must include the pending edits and appear in Files.
+30. **PDF passwords/corruption:** open a password PDF (try wrong then correct
+    password) and a truncated/corrupt PDF. Expect a password form or a clear
+    retryable error, never a crash.
+31. **PDF overwrite safety:** choose Overwrite original only after confirmation;
+    confirm the file is replaced, the Files row updates, and a failed save leaves
+    the original intact.
 
 ## Known limitations
 
@@ -349,8 +425,24 @@ desktop/web are not targeted because `pdfx`/`image_picker` are mobile plugins.
   placeholder files, not the real document. The converter shows a notice.
 - PDF → DOCX/XLSX fidelity depends on the backend; PDFs describe glyph
   positions, so editable output is approximate.
-- PDF → images always outputs JPG (quality preset controls resolution/quality).
-- No OCR, no cloud sync, no multi-select in the file hub yet.
+- PDF text replacement removes the original run with a true redaction and draws
+  the replacement as a foreground stamp. It is visually clean but the new text
+  is not guaranteed to be selectable/searchable, and the original font is not
+  preserved; the editor uses a close default face and size. Use DOCX conversion
+  when full text-layer fidelity matters.
+- Scanned/image-only PDFs have no editable text layer. Text editing detects this
+  and offers PDF → DOCX; there is no built-in OCR.
+- Saving flattens annotations on the edited document into page content so the
+  output matches the editor preview and renders consistently across PDF
+  viewers. Existing comments, stamps and form appearances on those pages become
+  static as a side effect.
+- The PDF engine (`pdf_manipulator`) is a native dependency delivered by a build
+  hook. First builds need network access to fetch the binary, and the APK grows
+  accordingly. Very large or vector-heavy pages take longer to rasterize; the
+  reader bounds page width and keeps only five images in memory.
+- PDF page preview now swipes between pages and prefetches one neighbour, but it
+  is not a continuous-scroll canvas; jumping far with the slider shows a spinner
+  until that page renders.
 - Edge detection is heuristic: it assumes a bright sheet on a contrasting
   background. One-bright-surface scenes and very low contrast fall back to the
   full frame and rely on the manual corner handles. There is no shadow removal
