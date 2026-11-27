@@ -52,6 +52,10 @@ class _LiveScanScreenState extends State<LiveScanScreen> {
   void _handlePageAdded(CapturedPageResult result) {
     if (!mounted) return;
     setState(() => _lastAdded = result);
+    // Automatic detection was not usable for this shot: go straight to the
+    // corner editor so the page can be fixed before scanning the next one.
+    // Cancelling there keeps the uncropped photo in the batch.
+    if (result.needsEdgeReview) unawaited(_adjustEdges(result));
   }
 
   Future<void> _adjustEdges(CapturedPageResult result) async {

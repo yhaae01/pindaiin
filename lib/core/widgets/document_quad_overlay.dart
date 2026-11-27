@@ -4,22 +4,36 @@ import '../document/document_corners.dart';
 
 /// Four draggable corner handles over the page preview.
 ///
-/// Corner positions are normalized, so the same widget works on the zoomed
-/// preview and maps directly to full-resolution pixels at warp time. Pointer
-/// events are used instead of gesture recognizers so the surrounding
+/// Coordinate mapping: the widget is laid out exactly over the displayed image
+/// (same aspect ratio and rotation), so a normalized corner `(nx, ny)` sits at
+/// `(nx * width, ny * height)` logical pixels inside this widget. Those same
+/// normalized numbers are what `DocumentCorners.scaledTo` multiplies by the
+/// rotated full-resolution image size when the page is warped, so what the user
+/// lines up by hand maps 1:1 onto the photo's pixels.
+///
+/// Pointer events are used instead of gesture recognizers so the surrounding
 /// [InteractiveViewer] still handles pinch-to-zoom.
 class DocumentQuadOverlay extends StatefulWidget {
   const DocumentQuadOverlay({
     super.key,
     required this.corners,
     required this.onChanged,
+    this.onActiveCornerChanged,
     this.accent,
-    this.hitRadius = 36,
+    this.hitRadius = 44,
   });
 
   final DocumentCorners corners;
   final ValueChanged<DocumentCorners> onChanged;
+
+  /// Reports which corner is under the finger (0-3) while dragging, and null
+  /// when the drag ends. Used to place the magnifier loupe.
+  final ValueChanged<int?>? onActiveCornerChanged;
+
   final Color? accent;
+
+  /// Radius of the invisible touch target around each handle. Generous so a
+  /// corner can be grabbed without pixel-perfect aim.
   final double hitRadius;
 
   @override
@@ -61,6 +75,7 @@ class _DocumentQuadOverlayState extends State<DocumentQuadOverlay> {
       _activeCorner = best;
       _draft = corners;
     });
+    widget.onActiveCornerChanged?.call(best);
   }
 
   void _onPointerMove(PointerMoveEvent event, Size size) {
@@ -73,12 +88,15 @@ class _DocumentQuadOverlayState extends State<DocumentQuadOverlay> {
       size.width == 0 ? 0 : event.localDelta.dx / size.width,
       size.height == 0 ? 0 : event.localDelta.dy / size.height,
     );
-    final candidate = draft
-        .withPoint(corner, draft.points[corner] + delta)
-        .clampedToFrame();
-    if (!candidate.isValid) return;
+    // movedCorner() clamps to the image and rejects crossed or degenerate
+    // outlines, so an invalid drag simply keeps the last valid corners.
+    final candidate = draft.movedCorner(
+      corner,
+      draft.points[corner] + delta,
+    );
+    if (candidate == null) return;
 
-    _draft = candidate;
+    setState(() => _draft = candidate);
     widget.onChanged(candidate);
   }
 
@@ -89,6 +107,7 @@ class _DocumentQuadOverlayState extends State<DocumentQuadOverlay> {
       _activeCorner = null;
       _draft = null;
     });
+    widget.onActiveCornerChanged?.call(null);
   }
 
   @override
@@ -161,21 +180,21 @@ class DocumentQuadPainter extends CustomPainter {
     for (final point in points) {
       canvas.drawCircle(
         point,
-        18,
+        22,
         Paint()
           ..style = PaintingStyle.fill
           ..color = Colors.black.withValues(alpha: 0.25),
       );
       canvas.drawCircle(
         point,
-        11,
+        13,
         Paint()
           ..style = PaintingStyle.fill
           ..color = Colors.white,
       );
       canvas.drawCircle(
         point,
-        7,
+        8,
         Paint()
           ..style = PaintingStyle.fill
           ..color = accent,

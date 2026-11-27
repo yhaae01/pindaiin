@@ -6,21 +6,31 @@ import 'package:provider/provider.dart';
 import '../../core/document/document_corners.dart';
 import '../../core/models/scan_page.dart';
 import '../../core/services/app_services.dart';
+import '../../core/widgets/corner_loupe.dart';
 import '../../core/widgets/document_quad_overlay.dart';
 import '../../core/widgets/scan_page_image.dart';
 import '../../core/widgets/status_views.dart';
 import 'scan_controller.dart';
 
-/// Corners picked by the user plus the document filter chosen for the page.
+/// Corners picked by the user plus the page rotation and filter to apply.
 class DocumentEdgesResult {
-  const DocumentEdgesResult({required this.corners, required this.filter});
+  const DocumentEdgesResult({
+    required this.corners,
+    required this.filter,
+    required this.quarterTurns,
+  });
 
   final DocumentCorners corners;
   final ScanFilter filter;
+
+  /// Clockwise quarter turns chosen in the editor, relative to the source
+  /// photo. Passed to the warp so the crop and the rotation are baked in one
+  /// step.
+  final int quarterTurns;
 }
 
-/// Opens the edge detector/corner editor for page [index] and applies the
-/// result to the batch. Cancelling leaves the page untouched.
+/// Opens the post-capture corner editor for page [index] and applies the
+/// confirmed crop to the batch. Cancelling leaves the page untouched.
 Future<void> openDocumentEdges(
   BuildContext context,
   ScanController controller,
@@ -40,7 +50,7 @@ Future<void> openDocumentEdges(
   await controller.applyDocumentCorners(
     index,
     result.corners,
-    quarterTurns: page.quarterTurns,
+    quarterTurns: result.quarterTurns,
     filter: result.filter,
   );
   if (context.mounted && controller.error != null) {
@@ -48,8 +58,14 @@ Future<void> openDocumentEdges(
   }
 }
 
-/// Zooms in on the photographed page so the four paper corners can be checked
-/// and dragged before the perspective warp is applied.
+/// Post-capture corner adjustment.
+///
+/// The full-resolution photo is decoded for the preview and never modified
+/// here: the four handles simply describe a quad in normalized image
+/// coordinates, and the perspective warp runs only after the user confirms.
+/// Auto-detected corners seed the handles; when detection fails or looks
+/// unreliable the editor falls back to a sensible inset rectangle (or the full
+/// frame if even that is not possible).
 class DocumentEdgesScreen extends StatefulWidget {
   const DocumentEdgesScreen({super.key, required this.page});
 
@@ -63,12 +79,21 @@ class _DocumentEdgesScreenState extends State<DocumentEdgesScreen> {
   final TransformationController _zoom = TransformationController();
   final GlobalKey _viewerKey = GlobalKey();
 
+  static const double _loupeDiameter = 116;
+
   ui.Image? _image;
   bool _failed = false;
   bool _detecting = true;
   bool _manual = false;
   double _confidence = 0;
   String? _note;
+  int? _activeCorner;
+  int _quarterTurns = 0;
+
+  /// Auto-detected corners in the orientation currently on screen; used by the
+  /// Reset action. Null when detection failed.
+  DocumentCorners? _detectedCorners;
+
   DocumentCorners _corners = DocumentCorners.fullFrame;
   late ScanFilter _filter = widget.page.filter;
 
@@ -77,12 +102,13 @@ class _DocumentEdgesScreenState extends State<DocumentEdgesScreen> {
   ScanPage get _previewPage => widget.page.copyWith(
     imagePath: _sourcePath,
     filter: _filter,
-    quarterTurns: widget.page.quarterTurns,
+    quarterTurns: _quarterTurns,
   );
 
   @override
   void initState() {
     super.initState();
+    _quarterTurns = widget.page.quarterTurns % 4;
     _loadImage();
     _runDetection();
   }
@@ -115,22 +141,57 @@ class _DocumentEdgesScreenState extends State<DocumentEdgesScreen> {
       );
       if (!mounted) return;
       _zoom.value = Matrix4.identity();
+      // Detection can return a degenerate quad on very noisy photos; the
+      // handles still need a usable starting outline, so fall back to the
+      // whole image in that case.
+      final detected = detection.corners.rotated(_quarterTurns);
+      final corners = detected.isValid ? detected : DocumentCorners.fullFrame;
       setState(() {
-        _corners = detection.corners.rotated(widget.page.quarterTurns);
+        _detectedCorners = corners;
+        _corners = corners;
         _confidence = detection.confidence;
         _note = detection.note;
         _manual = false;
       });
     } catch (_) {
       if (!mounted) return;
+      _zoom.value = Matrix4.identity();
       setState(() {
+        _detectedCorners = null;
         _corners = DocumentCorners.fullFrame;
         _confidence = 0;
         _note = 'Automatic detection failed. Drag the corners to fit the page.';
+        _manual = false;
       });
     } finally {
       if (mounted) setState(() => _detecting = false);
     }
+  }
+
+  void _resetCorners() {
+    setState(() {
+      _corners = _detectedCorners ?? DocumentCorners.fullFrame;
+      _manual = false;
+    });
+    _zoom.value = Matrix4.identity();
+  }
+
+  void _selectFullImage() {
+    setState(() {
+      _corners = DocumentCorners.fullFrame;
+      _manual = true;
+    });
+  }
+
+  /// Rotates the source photo a quarter turn clockwise. The handles rotate with
+  /// it, so any manual adjustment is kept in the new orientation.
+  void _rotate() {
+    setState(() {
+      _quarterTurns = (_quarterTurns + 1) % 4;
+      _corners = _corners.rotatedClockwise();
+      _detectedCorners = _detectedCorners?.rotatedClockwise();
+    });
+    _zoom.value = Matrix4.identity();
   }
 
   void _zoomBy(double factor) {
@@ -153,16 +214,26 @@ class _DocumentEdgesScreenState extends State<DocumentEdgesScreen> {
     _zoom.value = zoom * _zoom.value;
   }
 
-  void _apply() {
-    Navigator.of(context)
-        .pop(DocumentEdgesResult(corners: _corners, filter: _filter));
+  void _cancel() => Navigator.of(context).pop();
+
+  void _confirm() {
+    Navigator.of(context).pop(
+      DocumentEdgesResult(
+        corners: _corners,
+        filter: _filter,
+        quarterTurns: _quarterTurns,
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      backgroundColor: const Color(0xFF11100F),
       appBar: AppBar(
-        title: const Text('Adjust edges'),
+        backgroundColor: const Color(0xFF11100F),
+        foregroundColor: Colors.white,
+        title: const Text('Adjust page edges'),
         actions: [
           IconButton(
             tooltip: 'Detect page automatically',
@@ -220,23 +291,34 @@ class _DocumentEdgesScreenState extends State<DocumentEdgesScreen> {
                   panEnabled: false,
                   minScale: 1,
                   maxScale: 5,
-                  child: Stack(
-                    fit: StackFit.expand,
-                    children: [
-                      ScanPageImage(
-                        page: _previewPage,
-                        preloadedImage: image,
-                        ignoreCrop: true,
-                        backgroundColor: Colors.black,
-                      ),
-                      DocumentQuadOverlay(
-                        corners: _corners,
-                        onChanged: (corners) => setState(() {
-                          _corners = corners;
-                          _manual = true;
-                        }),
-                      ),
-                    ],
+                  child: LayoutBuilder(
+                    builder: (context, constraints) {
+                      final size = constraints.biggest;
+                      return Stack(
+                        fit: StackFit.expand,
+                        children: [
+                          ScanPageImage(
+                            page: _previewPage,
+                            preloadedImage: image,
+                            ignoreCrop: true,
+                            backgroundColor: Colors.black,
+                          ),
+                          DocumentQuadOverlay(
+                            corners: _corners,
+                            onChanged: (corners) => setState(() {
+                              _corners = corners;
+                              _manual = true;
+                            }),
+                            onActiveCornerChanged: (index) {
+                              if (_activeCorner == index) return;
+                              setState(() => _activeCorner = index);
+                            },
+                          ),
+                          if (_activeCorner != null)
+                            _buildLoupe(size, image),
+                        ],
+                      );
+                    },
                   ),
                 ),
               ),
@@ -256,11 +338,71 @@ class _DocumentEdgesScreenState extends State<DocumentEdgesScreen> {
     );
   }
 
+  /// Places the magnifier near the active corner. The loupe lives inside the
+  /// zoomed viewer, so it is counter-scaled by the current zoom to stay a
+  /// constant size on screen while still tracking the handle exactly.
+  Widget _buildLoupe(Size size, ui.Image image) {
+    final index = _activeCorner;
+    if (index == null) return const SizedBox.shrink();
+
+    final corner = Offset(
+      _corners.points[index].dx * size.width,
+      _corners.points[index].dy * size.height,
+    );
+
+    return Positioned.fill(
+      child: IgnorePointer(
+        child: AnimatedBuilder(
+          animation: _zoom,
+          builder: (context, _) {
+            final zoom = _zoom.value.getMaxScaleOnAxis().clamp(1.0, 5.0);
+            final half = _loupeDiameter / 2 / zoom;
+            final lift = 88.0 / zoom;
+            // A corner in the lower half is dragged with the thumb; show the
+            // loupe above it. Near the top, put it below.
+            final dy = corner.dy > size.height * 0.45 ? -lift : lift;
+            final center = Offset(
+              corner.dx.clamp(half, size.width - half),
+              (corner.dy + dy).clamp(half, size.height - half),
+            );
+
+            return Stack(
+              children: [
+                Positioned(
+                  left: center.dx - _loupeDiameter / 2,
+                  top: center.dy - _loupeDiameter / 2,
+                  width: _loupeDiameter,
+                  height: _loupeDiameter,
+                  child: Transform.scale(
+                    scale: 1 / zoom,
+                    child: CornerLoupe(
+                      imageSize: size,
+                      point: corner,
+                      diameter: _loupeDiameter,
+                      child: ScanPageImage(
+                        page: _previewPage,
+                        preloadedImage: image,
+                        ignoreCrop: true,
+                        backgroundColor: Colors.black,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            );
+          },
+        ),
+      ),
+    );
+  }
+
   Widget _buildControls(BuildContext context) {
     final theme = Theme.of(context);
+    final hintColor = Colors.white70;
     final showWarning = !_detecting && !_manual && _confidence < 0.55;
 
-    return Padding(
+    return Container(
+      color: const Color(0xFF11100F),
       padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -279,13 +421,45 @@ class _DocumentEdgesScreenState extends State<DocumentEdgesScreen> {
               padding: const EdgeInsets.only(bottom: 6),
               child: Text(
                 _note!,
-                style: theme.textTheme.bodySmall?.copyWith(
-                  color: theme.colorScheme.onSurfaceVariant,
-                ),
+                style: theme.textTheme.bodySmall?.copyWith(color: hintColor),
               ),
             ),
-          const SizedBox(height: 10),
-          Text('Filter', style: theme.textTheme.titleSmall),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Expanded(
+                child: _QuickAction(
+                  icon: Icons.restart_alt,
+                  label: 'Reset',
+                  onTap: _detecting || _detectedCorners == null
+                      ? null
+                      : _resetCorners,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: _QuickAction(
+                  icon: Icons.fullscreen,
+                  label: 'Full image',
+                  selected: _corners.isFullFrame,
+                  onTap: _detecting ? null : _selectFullImage,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: _QuickAction(
+                  icon: Icons.rotate_right,
+                  label: 'Rotate',
+                  onTap: _detecting ? null : _rotate,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Text(
+            'Filter',
+            style: theme.textTheme.titleSmall?.copyWith(color: Colors.white),
+          ),
           const SizedBox(height: 6),
           Wrap(
             spacing: 8,
@@ -301,35 +475,32 @@ class _DocumentEdgesScreenState extends State<DocumentEdgesScreen> {
           ),
           const SizedBox(height: 8),
           Text(
-            'Drag a corner onto the paper edge. Pinch or use + / − to zoom. '
-            'The filter is applied after the page is straightened.',
-            style: theme.textTheme.bodySmall?.copyWith(
-              color: theme.colorScheme.onSurfaceVariant,
-            ),
+            'Drag a handle onto the paper edge — a magnifier appears so your '
+            'finger does not cover the corner. Pinch or use + / − to zoom.',
+            style: theme.textTheme.bodySmall?.copyWith(color: hintColor),
           ),
           const SizedBox(height: 12),
           Row(
             children: [
               Expanded(
-                child: OutlinedButton.icon(
-                  onPressed: _detecting
-                      ? null
-                      : () {
-                          setState(() {
-                            _corners = DocumentCorners.fullFrame;
-                            _manual = true;
-                          });
-                          _zoom.value = Matrix4.identity();
-                        },
-                  icon: const Icon(Icons.fullscreen),
-                  label: const Text('Full page'),
+                child: OutlinedButton(
+                  onPressed: _cancel,
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: Colors.white,
+                    side: const BorderSide(color: Colors.white38),
+                    minimumSize: const Size(0, 48),
+                  ),
+                  child: const Text('Cancel'),
                 ),
               ),
               const SizedBox(width: 12),
               Expanded(
                 child: FilledButton(
-                  onPressed: _detecting || !_corners.isValid ? null : _apply,
-                  child: const Text('Apply'),
+                  onPressed: _detecting || !_corners.isValid ? null : _confirm,
+                  style: FilledButton.styleFrom(
+                    minimumSize: const Size(0, 48),
+                  ),
+                  child: const Text('Confirm'),
                 ),
               ),
             ],
@@ -342,7 +513,54 @@ class _DocumentEdgesScreenState extends State<DocumentEdgesScreen> {
   double _aspectRatio(ui.Image image) {
     final width = image.width.toDouble();
     final height = image.height.toDouble();
-    return widget.page.quarterTurns.isOdd ? height / width : width / height;
+    return _quarterTurns.isOdd ? height / width : width / height;
+  }
+}
+
+class _QuickAction extends StatelessWidget {
+  const _QuickAction({
+    required this.icon,
+    required this.label,
+    this.onTap,
+    this.selected = false,
+  });
+
+  final IconData icon;
+  final String label;
+  final VoidCallback? onTap;
+  final bool selected;
+
+  @override
+  Widget build(BuildContext context) {
+    final enabled = onTap != null;
+    final color = !enabled
+        ? Colors.white30
+        : selected
+        ? Theme.of(context).colorScheme.primary
+        : Colors.white;
+    return Material(
+      color: Colors.white.withValues(alpha: 0.08),
+      borderRadius: BorderRadius.circular(12),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 10),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(icon, size: 22, color: color),
+              const SizedBox(height: 4),
+              Text(
+                label,
+                style: TextStyle(fontSize: 11.5, color: color),
+                overflow: TextOverflow.ellipsis,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 }
 
@@ -370,8 +588,9 @@ class _Banner extends StatelessWidget {
           Expanded(
             child: Text(
               message,
-              style: Theme.of(context).textTheme.bodySmall
-                  ?.copyWith(color: scheme.onSecondaryContainer),
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: scheme.onSecondaryContainer,
+              ),
             ),
           ),
         ],

@@ -1,11 +1,13 @@
 import 'dart:typed_data';
 
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:image/image.dart' as img;
 import 'package:pindaiin/core/document/document_corners.dart';
 import 'package:pindaiin/core/document/edge_document_detector.dart';
 import 'package:pindaiin/core/document/perspective_transform.dart';
 import 'package:pindaiin/core/document/perspective_warper.dart';
+import 'package:pindaiin/core/widgets/document_quad_overlay.dart';
 
 void main() {
   group('DocumentCorners', () {
@@ -62,6 +64,53 @@ void main() {
 
       expect(crossed.isConvex, isFalse);
       expect(crossed.isValid, isFalse);
+    });
+
+    test('self-intersecting quads are reported', () {
+      const crossed = DocumentCorners(
+        topLeft: Offset(0.2, 0.1),
+        topRight: Offset(0.8, 0.1),
+        bottomRight: Offset(0.2, 0.9),
+        bottomLeft: Offset(0.8, 0.9),
+      );
+
+      expect(crossed.hasSelfIntersection, isTrue);
+      expect(skewed.hasSelfIntersection, isFalse);
+      expect(DocumentCorners.fullFrame.hasSelfIntersection, isFalse);
+    });
+
+    test('a corner drag is clamped and cannot cross the outline', () {
+      const quad = DocumentCorners(
+        topLeft: Offset(0.1, 0.1),
+        topRight: Offset(0.9, 0.1),
+        bottomRight: Offset(0.9, 0.9),
+        bottomLeft: Offset(0.1, 0.9),
+      );
+
+      final clamped = quad.movedCorner(0, const Offset(-0.5, -0.4));
+      expect(clamped, isNotNull);
+      expect(clamped!.topLeft, Offset.zero);
+      expect(clamped.isValid, isTrue);
+
+      // Dragging a corner over its neighbours would fold the quad.
+      expect(quad.movedCorner(0, const Offset(0.95, 0.95)), isNull);
+      expect(quad.movedCorner(0, const Offset(0.9, 0.1)), isNull);
+    });
+
+    test('normalized corners map proportionally to preview and full res', () {
+      final preview = skewed.scaledTo(const Size(320, 240));
+      final full = skewed.scaledTo(const Size(4000, 3000));
+
+      for (var index = 0; index < 4; index++) {
+        expect(
+          preview.points[index].dx / 320,
+          closeTo(full.points[index].dx / 4000, 1e-9),
+        );
+        expect(
+          preview.points[index].dy / 240,
+          closeTo(full.points[index].dy / 3000, 1e-9),
+        );
+      }
     });
 
     test('dragged corners are clamped to the frame', () {
@@ -158,6 +207,88 @@ void main() {
         ),
         throwsA(isA<Exception>()),
       );
+    });
+  });
+
+  group('DocumentQuadOverlay', () {
+    testWidgets('a generous touch target drags and clamps the corner', (
+      tester,
+    ) async {
+      var corners = const DocumentCorners(
+        topLeft: Offset(0.2, 0.2),
+        topRight: Offset(0.8, 0.2),
+        bottomRight: Offset(0.8, 0.8),
+        bottomLeft: Offset(0.2, 0.8),
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Center(
+            child: SizedBox(
+              width: 200,
+              height: 200,
+              child: StatefulBuilder(
+                builder: (context, setState) => DocumentQuadOverlay(
+                  corners: corners,
+                  onChanged: (value) => setState(() => corners = value),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+
+      final origin = tester.getTopLeft(find.byType(DocumentQuadOverlay));
+      // Grab 30 px away from the handle; still inside the touch target.
+      final gesture = await tester.startGesture(
+        origin + const Offset(40 + 30, 40 + 30),
+      );
+      await tester.pump();
+      await gesture.moveBy(const Offset(-200, -200));
+      await tester.pump();
+      await gesture.up();
+      await tester.pump();
+
+      expect(corners.topLeft, Offset.zero);
+      expect(corners.isValid, isTrue);
+    });
+
+    testWidgets('dragging a corner across the quad is ignored', (tester) async {
+      var corners = const DocumentCorners(
+        topLeft: Offset(0.2, 0.2),
+        topRight: Offset(0.8, 0.2),
+        bottomRight: Offset(0.8, 0.8),
+        bottomLeft: Offset(0.2, 0.8),
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Center(
+            child: SizedBox(
+              width: 200,
+              height: 200,
+              child: StatefulBuilder(
+                builder: (context, setState) => DocumentQuadOverlay(
+                  corners: corners,
+                  onChanged: (value) => setState(() => corners = value),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+
+      final origin = tester.getTopLeft(find.byType(DocumentQuadOverlay));
+      final gesture = await tester.startGesture(origin + const Offset(40, 40));
+      await tester.pump();
+      await gesture.moveBy(const Offset(140, 140));
+      await tester.pump();
+      await gesture.up();
+      await tester.pump();
+
+      expect(corners.isValid, isTrue);
+      expect(corners.topLeft, isNot(const Offset(0.9, 0.9)));
+      expect(corners.topLeft.dy, lessThan(0.5));
     });
   });
 

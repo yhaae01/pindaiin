@@ -130,6 +130,20 @@ class DocumentCorners {
   }
 
   /// Converts normalized corners to pixel coordinates for [size].
+  ///
+  /// The normalized values are relative to the image *as displayed*, i.e.
+  /// after [rotated] has applied the page's quarter turns. Two useful target
+  /// spaces therefore share the same numbers:
+  ///
+  /// * the on-screen preview widget: its logical size times the normalized
+  ///   corner gives the pixel position of the handle inside that widget
+  ///   (`x = nx * widgetWidth`, `y = ny * widgetHeight`), and
+  /// * the full-resolution photo: the size of the *rotated* source image times
+  ///   the same normalized corner gives the source pixel that the warp samples
+  ///   (`x = nx * rotatedWidth`, `y = ny * rotatedHeight`).
+  ///
+  /// That equivalence is what lets a handle dragged on a 320 px preview map to
+  /// the exact corner on a 4000 px photo without any additional scaling.
   DocumentCorners scaledTo(Size size) {
     Offset scale(Offset point) =>
         Offset(point.dx * size.width, point.dy * size.height);
@@ -186,6 +200,25 @@ class DocumentCorners {
     );
   }
 
+  /// True when two opposite edges cross, i.e. the quad is a self-intersecting
+  /// "bow-tie". Such a quad cannot be warped and is rejected while dragging.
+  bool get hasSelfIntersection =>
+      _segmentsCross(topLeft, topRight, bottomRight, bottomLeft) ||
+      _segmentsCross(topRight, bottomRight, bottomLeft, topLeft);
+
+  static bool _segmentsCross(Offset a, Offset b, Offset c, Offset d) {
+    double side(Offset from, Offset to, Offset point) =>
+        (to.dx - from.dx) * (point.dy - from.dy) -
+        (to.dy - from.dy) * (point.dx - from.dx);
+
+    final d1 = side(a, b, c);
+    final d2 = side(a, b, d);
+    final d3 = side(c, d, a);
+    final d4 = side(c, d, b);
+    return ((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) &&
+        ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0));
+  }
+
   /// True when the quad is convex and wound consistently.
   bool get isConvex {
     final p = points;
@@ -217,8 +250,24 @@ class DocumentCorners {
     return shortest;
   }
 
-  /// A quad that can be safely warped: convex, non-degenerate and not a sliver.
-  bool get isValid => area >= 0.02 && isConvex && shortestEdgeRatio >= 0.03;
+  /// A quad that can be safely warped: convex, non-degenerate, not crossed and
+  /// not a sliver.
+  bool get isValid =>
+      area >= 0.02 &&
+      !hasSelfIntersection &&
+      isConvex &&
+      shortestEdgeRatio >= 0.03;
+
+  /// Moves one corner to [target], clamped to the image bounds.
+  ///
+  /// Returns null when the clamped result would be degenerate or cross itself,
+  /// so a drag can never produce an unwarpable outline. Callers keep the last
+  /// accepted corners while the pointer keeps moving.
+  DocumentCorners? movedCorner(int index, Offset target) {
+    final candidate = withPoint(index, target).clampedToFrame();
+    if (candidate.hasSelfIntersection || !candidate.isValid) return null;
+    return candidate;
+  }
 
   /// Compares corners within [tolerance] (normalized units).
   bool isCloseTo(DocumentCorners other, {double tolerance = 0.005}) {
