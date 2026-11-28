@@ -206,7 +206,7 @@ class LiveScanController extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Takes a high-resolution photo (the preview stream is stopped first, which
   /// is what lets devices that share the sensor stream capture at full quality)
-  /// and adds the straightened page to the batch.
+  /// and adds the uncropped page to the batch for edge review.
   Future<CapturedPageResult?> capture() async {
     final camera = _camera;
     if (_disposed ||

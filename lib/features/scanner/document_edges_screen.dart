@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../core/document/document_corners.dart';
+import '../../core/document/document_detector.dart';
 import '../../core/models/scan_page.dart';
 import '../../core/services/app_services.dart';
 import '../../core/widgets/corner_loupe.dart';
@@ -31,17 +32,25 @@ class DocumentEdgesResult {
 
 /// Opens the post-capture corner editor for page [index] and applies the
 /// confirmed crop to the batch. Cancelling leaves the page untouched.
+///
+/// [initialDetection] lets the capture flow hand over the edge detection it
+/// already ran, so the editor opens with corners in place instead of detecting
+/// the same photo twice.
 Future<void> openDocumentEdges(
   BuildContext context,
   ScanController controller,
-  int index,
-) async {
+  int index, {
+  DocumentDetection? initialDetection,
+}) async {
   if (index < 0 || index >= controller.pageCount) return;
   final page = controller.pages[index];
 
   final result = await Navigator.of(context).push<DocumentEdgesResult>(
     MaterialPageRoute(
-      builder: (_) => DocumentEdgesScreen(page: page),
+      builder: (_) => DocumentEdgesScreen(
+        page: page,
+        initialDetection: initialDetection,
+      ),
       fullscreenDialog: true,
     ),
   );
@@ -67,9 +76,16 @@ Future<void> openDocumentEdges(
 /// unreliable the editor falls back to a sensible inset rectangle (or the full
 /// frame if even that is not possible).
 class DocumentEdgesScreen extends StatefulWidget {
-  const DocumentEdgesScreen({super.key, required this.page});
+  const DocumentEdgesScreen({
+    super.key,
+    required this.page,
+    this.initialDetection,
+  });
 
   final ScanPage page;
+
+  /// Detection already run by the capture flow, in the unrotated source frame.
+  final DocumentDetection? initialDetection;
 
   @override
   State<DocumentEdgesScreen> createState() => _DocumentEdgesScreenState();
@@ -110,7 +126,12 @@ class _DocumentEdgesScreenState extends State<DocumentEdgesScreen> {
     super.initState();
     _quarterTurns = widget.page.quarterTurns % 4;
     _loadImage();
-    _runDetection();
+    final initial = widget.initialDetection;
+    if (initial != null) {
+      _applyDetection(initial);
+    } else {
+      _runDetection();
+    }
   }
 
   @override
@@ -133,6 +154,19 @@ class _DocumentEdgesScreenState extends State<DocumentEdgesScreen> {
     }
   }
 
+  /// Applies a detection result to the handles, in the orientation currently on
+  /// screen. Detection can return a degenerate quad on very noisy photos, so
+  /// the whole image is used as a usable starting outline in that case.
+  void _applyDetection(DocumentDetection detection) {
+    final detected = detection.corners.rotated(_quarterTurns);
+    _detectedCorners = detected.isValid ? detected : null;
+    _corners = _detectedCorners ?? DocumentCorners.fullFrame;
+    _confidence = detection.confidence;
+    _note = detection.note;
+    _manual = false;
+    _detecting = false;
+  }
+
   Future<void> _runDetection() async {
     setState(() => _detecting = true);
     try {
@@ -141,18 +175,7 @@ class _DocumentEdgesScreenState extends State<DocumentEdgesScreen> {
       );
       if (!mounted) return;
       _zoom.value = Matrix4.identity();
-      // Detection can return a degenerate quad on very noisy photos; the
-      // handles still need a usable starting outline, so fall back to the
-      // whole image in that case.
-      final detected = detection.corners.rotated(_quarterTurns);
-      final corners = detected.isValid ? detected : DocumentCorners.fullFrame;
-      setState(() {
-        _detectedCorners = corners;
-        _corners = corners;
-        _confidence = detection.confidence;
-        _note = detection.note;
-        _manual = false;
-      });
+      setState(() => _applyDetection(detection));
     } catch (_) {
       if (!mounted) return;
       _zoom.value = Matrix4.identity();

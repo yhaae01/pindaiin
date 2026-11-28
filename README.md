@@ -178,8 +178,10 @@ device rotation and screen size.
    inscribed in its convex hull becomes the page outline. The result carries a
    confidence score instead of a hard yes/no.
 2. **Confirm/adjust** (`DocumentEdgesScreen`) — a zoomed preview draws the four
-   corners; drag a handle (pinch, +/− or Fit to zoom) when detection is
-   uncertain, and pick the document filter with a live preview.
+   corners; drag a handle (a magnifier loupe appears so the finger never hides
+   the edge) and reset, select the full image or rotate before confirming. The
+   document filter is previewed live. It opens after every capture, so a
+   confident detection is reviewed just like an uncertain one.
 3. **Warp** (`HomographyPerspectiveWarper`) — the four corners define a
    projective transform from the output rectangle to the photo, so every
    output pixel is sampled bilinearly from the source. Lines stay straight,
@@ -191,10 +193,10 @@ device rotation and screen size.
    "Edges" can start over without compounding quality loss.
 
 Gallery imports are straightened headlessly during import (uncertain pages are
-left untouched). Live-scanner captures are detected and warped immediately;
-when detection is uncertain the live screen offers an **Adjust** action, and the
-batch editor's **Edges** tool is always available. System-camera fallbacks still
-open the edge editor. The detector and warper only meet at `DocumentProcessor`,
+left untouched). Live-scanner captures and system-camera photos are added
+uncropped and open the edge editor with the detection already applied; only the
+confirmed corners are warped. The batch editor's **Edges** tool reopens the same
+editor for any page. The detector and warper only meet at `DocumentProcessor`,
 constructed in `AppServices.bootstrap()` — swapping either interface changes no
 widget or controller.
 

@@ -28,21 +28,15 @@ class ScanExportResult {
 }
 
 /// Outcome of adding one live-camera capture to the batch.
+///
+/// The page is added uncropped and the full-resolution photo is kept intact;
+/// [detection] is the edge result the caller can seed the corner editor with.
+/// The perspective warp runs only when the user confirms that editor.
 class CapturedPageResult {
-  const CapturedPageResult({
-    required this.index,
-    required this.detection,
-    required this.straightened,
-  });
+  const CapturedPageResult({required this.index, required this.detection});
 
   final int index;
   final DocumentDetection detection;
-
-  /// True when the page was confidently detected and perspective-warped, so it
-  /// needs no manual edge work.
-  final bool straightened;
-
-  bool get needsEdgeReview => !straightened;
 }
 
 /// Owns one scan batch: the ordered pages plus their non-destructive edits.
@@ -101,13 +95,12 @@ class ScanController extends ChangeNotifier {
     }
   }
 
-  /// Adds one photo taken by the live scanner, detects its edges and warps it
-  /// when the detection is confident.
+  /// Adds one photo taken by the live scanner and detects its edges.
   ///
-  /// Unlike the system-camera flow this runs immediately: the live scanner has
-  /// already shown the user where the page is, so a confident capture goes
-  /// straight into the batch. Low-contrast captures stay unwarped and the caller
-  /// can offer the manual edge editor.
+  /// The page is added uncropped on purpose: every capture goes through the
+  /// corner editor, so the full-resolution photo is only perspective-warped
+  /// after the user confirms it. The detection is returned so the editor can
+  /// start from it instead of running the detector a second time.
   Future<CapturedPageResult?> addCapturedPhoto(String sourcePath) async {
     _setBusy('Processing page…');
     _error = null;
@@ -128,27 +121,7 @@ class ScanController extends ChangeNotifier {
         );
       }
 
-      var straightened = false;
-      if (detection.isConfident && detection.corners.isValid) {
-        // A full-frame detection is already the page: keep the original bytes
-        // instead of re-encoding an identical image.
-        if (detection.corners.isFullFrame) {
-          straightened = true;
-        } else {
-          try {
-            await _warpPage(index, detection.corners);
-            straightened = true;
-          } catch (error) {
-            _error = _describe(error);
-          }
-        }
-      }
-
-      return CapturedPageResult(
-        index: index,
-        detection: detection,
-        straightened: straightened,
-      );
+      return CapturedPageResult(index: index, detection: detection);
     } catch (error) {
       _error = _describe(error);
       return null;

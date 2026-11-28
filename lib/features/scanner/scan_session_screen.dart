@@ -40,9 +40,9 @@ class _ScanSessionScreenState extends State<ScanSessionScreen> {
     if (error != null) showSnack(context, error);
   }
 
-  /// Opens the live scanner. Pages are detected and straightened as they are
-  /// captured; the screen falls back to the system camera when the in-app
-  /// camera cannot be opened (permission denied, no back camera).
+  /// Opens the live scanner. Every captured page is confirmed in the corner
+  /// editor before it is warped; the screen falls back to the system camera when
+  /// the in-app camera cannot be opened (permission denied, no back camera).
   Future<void> _capture() async {
     final useSystemCamera = await Navigator.of(context).push<bool>(
       MaterialPageRoute(

@@ -29,7 +29,6 @@ class LiveScanScreen extends StatefulWidget {
 
 class _LiveScanScreenState extends State<LiveScanScreen> {
   late final LiveScanController _live;
-  CapturedPageResult? _lastAdded;
   bool _editing = false;
 
   @override
@@ -51,22 +50,28 @@ class _LiveScanScreenState extends State<LiveScanScreen> {
 
   void _handlePageAdded(CapturedPageResult result) {
     if (!mounted) return;
-    setState(() => _lastAdded = result);
-    // Automatic detection was not usable for this shot: go straight to the
-    // corner editor so the page can be fixed before scanning the next one.
-    // Cancelling there keeps the uncropped photo in the batch.
-    if (result.needsEdgeReview) unawaited(_adjustEdges(result));
+    // Every capture is reviewed before it enters the batch, whether or not the
+    // automatic detection was confident. The editor opens with the detection
+    // already applied; cancelling keeps the uncropped photo in the batch.
+    unawaited(_reviewEdges(result));
   }
 
-  Future<void> _adjustEdges(CapturedPageResult result) async {
+  Future<void> _reviewEdges(CapturedPageResult result) async {
     if (_editing) return;
     setState(() => _editing = true);
     await _live.pause();
-    if (!mounted) return;
-    await openDocumentEdges(context, widget.controller, result.index);
+    if (!mounted) {
+      _editing = false;
+      return;
+    }
+    await openDocumentEdges(
+      context,
+      widget.controller,
+      result.index,
+      initialDetection: result.detection,
+    );
     if (!mounted) return;
     await _live.resume();
-    if (mounted) setState(() => _lastAdded = null);
     _editing = false;
   }
 
@@ -169,13 +174,6 @@ class _LiveScanScreenState extends State<LiveScanScreen> {
           ),
         const Spacer(),
         if (widget.controller.pageCount > 0) _buildPageStrip(),
-        if (_lastAdded != null)
-          _CaptureFeedback(
-            result: _lastAdded!,
-            busy: _editing,
-            onAdjust: () => _adjustEdges(_lastAdded!),
-            onDismiss: () => setState(() => _lastAdded = null),
-          ),
         if (_live.error == null) _buildStatusChip(context),
         const SizedBox(height: 12),
         if (_live.error == null) _buildControls(),
@@ -455,62 +453,6 @@ class _RoundIconButton extends StatelessWidget {
           ),
         ),
       ],
-    );
-  }
-}
-
-class _CaptureFeedback extends StatelessWidget {
-  const _CaptureFeedback({
-    required this.result,
-    required this.busy,
-    required this.onAdjust,
-    required this.onDismiss,
-  });
-
-  final CapturedPageResult result;
-  final bool busy;
-  final VoidCallback onAdjust;
-  final VoidCallback onDismiss;
-
-  @override
-  Widget build(BuildContext context) {
-    final uncertain = result.needsEdgeReview;
-    final color = uncertain ? const Color(0xFFFBBF24) : const Color(0xFF34D399);
-    return Container(
-      margin: const EdgeInsets.fromLTRB(20, 4, 20, 10),
-      padding: const EdgeInsets.fromLTRB(12, 6, 4, 6),
-      decoration: BoxDecoration(
-        color: Colors.black.withValues(alpha: 0.72),
-        borderRadius: BorderRadius.circular(14),
-      ),
-      child: Row(
-        children: [
-          Icon(
-            uncertain ? Icons.warning_amber_rounded : Icons.check_circle_outline,
-            color: color,
-            size: 20,
-          ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(
-              uncertain
-                  ? 'Page ${result.index + 1} added — edges were not clear.'
-                  : 'Page ${result.index + 1} straightened and added.',
-              style: const TextStyle(color: Colors.white, fontSize: 12.5),
-            ),
-          ),
-          if (uncertain)
-            TextButton(
-              onPressed: busy ? null : onAdjust,
-              child: const Text('Adjust'),
-            ),
-          IconButton(
-            tooltip: 'Dismiss',
-            onPressed: busy ? null : onDismiss,
-            icon: const Icon(Icons.close, size: 18, color: Colors.white70),
-          ),
-        ],
-      ),
     );
   }
 }
