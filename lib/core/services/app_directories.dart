@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
@@ -15,6 +16,21 @@ class AppDirectories {
     required this.sessions,
     required this.temp,
   });
+
+  /// Builds the folder set from explicit directories, skipping the
+  /// `path_provider` lookup so tests can work in a temp folder.
+  @visibleForTesting
+  factory AppDirectories.forTesting({
+    required Directory scans,
+    required Directory exports,
+    required Directory sessions,
+    required Directory temp,
+  }) => AppDirectories._(
+    scans: scans,
+    exports: exports,
+    sessions: sessions,
+    temp: temp,
+  );
 
   /// Exported scans (images / merged PDF).
   final Directory scans;

@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:path/path.dart' as p;
 import 'package:uuid/uuid.dart';
 
@@ -55,6 +56,34 @@ class AppServices {
   /// Bearer token.
   static const officeApiUrl = String.fromEnvironment('OFFICE_API_URL');
   static const officeApiKey = String.fromEnvironment('OFFICE_API_KEY');
+
+  /// Graph built from explicit parts, for tests that need real file IO and
+  /// detection without the plugin-backed startup that [bootstrap] performs.
+  @visibleForTesting
+  factory AppServices.forTesting({
+    required AppDirectories directories,
+    required FileStorageService storage,
+    required DocumentProcessor documents,
+    FileRepository? repository,
+  }) {
+    final pdf = LocalPdfConverter(storage: storage);
+    return AppServices._(
+      directories: directories,
+      storage: storage,
+      repository: repository ?? FileRepository(),
+      fileAccess: FileAccessService(),
+      images: const ImageProcessor(),
+      documents: documents,
+      pdf: pdf,
+      pdfEditor: PdfService(),
+      converter: DocumentConverterService(
+        pdf: pdf,
+        office: RepositoryOfficeConverter(
+          repository: MockOfficeConversionRepository(),
+        ),
+      ),
+    );
+  }
 
   static Future<AppServices> bootstrap() async {
     final directories = await AppDirectories.create();
