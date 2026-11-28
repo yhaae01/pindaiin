@@ -195,8 +195,10 @@ device rotation and screen size.
 Gallery imports are straightened headlessly during import (uncertain pages are
 left untouched). Live-scanner captures and system-camera photos are added
 uncropped and open the edge editor with the detection already applied; only the
-confirmed corners are warped. The batch editor's **Edges** tool reopens the same
-editor for any page. The detector and warper only meet at `DocumentProcessor`,
+confirmed corners are warped. The live screen's **Skip review** toggle is the
+fast mode for batches of already-straight pages: a confident detection is
+warped during capture, while an unclear one still opens the editor. The batch
+editor's **Edges** tool reopens the same editor for any page. The detector and warper only meet at `DocumentProcessor`,
 constructed in `AppServices.bootstrap()` — swapping either interface changes no
 widget or controller.
 

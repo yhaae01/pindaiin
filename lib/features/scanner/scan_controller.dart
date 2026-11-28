@@ -29,14 +29,24 @@ class ScanExportResult {
 
 /// Outcome of adding one live-camera capture to the batch.
 ///
-/// The page is added uncropped and the full-resolution photo is kept intact;
-/// [detection] is the edge result the caller can seed the corner editor with.
-/// The perspective warp runs only when the user confirms that editor.
+/// Unless [straightened] is true the page is added uncropped and the
+/// full-resolution photo is kept intact; [detection] is the edge result the
+/// caller can seed the corner editor with, and the perspective warp runs only
+/// when the user confirms that editor.
 class CapturedPageResult {
-  const CapturedPageResult({required this.index, required this.detection});
+  const CapturedPageResult({
+    required this.index,
+    required this.detection,
+    this.straightened = false,
+  });
 
   final int index;
+
   final DocumentDetection detection;
+
+  /// True when skip-review mode already warped the page during capture, so no
+  /// edge editor is needed.
+  final bool straightened;
 }
 
 /// Owns one scan batch: the ordered pages plus their non-destructive edits.
@@ -97,11 +107,19 @@ class ScanController extends ChangeNotifier {
 
   /// Adds one photo taken by the live scanner and detects its edges.
   ///
-  /// The page is added uncropped on purpose: every capture goes through the
-  /// corner editor, so the full-resolution photo is only perspective-warped
-  /// after the user confirms it. The detection is returned so the editor can
-  /// start from it instead of running the detector a second time.
-  Future<CapturedPageResult?> addCapturedPhoto(String sourcePath) async {
+  /// The page is added uncropped on purpose: by default every capture goes
+  /// through the corner editor, so the full-resolution photo is only
+  /// perspective-warped after the user confirms it. The detection is returned
+  /// so the editor can start from it instead of running the detector a second
+  /// time.
+  ///
+  /// With [skipReview] (the live scanner's fast mode) a confident detection is
+  /// warped straight away and the result is marked [CapturedPageResult.
+  /// straightened]; unclear shots are still left for the editor.
+  Future<CapturedPageResult?> addCapturedPhoto(
+    String sourcePath, {
+    bool skipReview = false,
+  }) async {
     _setBusy('Processing page…');
     _error = null;
     try {
@@ -121,7 +139,28 @@ class ScanController extends ChangeNotifier {
         );
       }
 
-      return CapturedPageResult(index: index, detection: detection);
+      var straightened = false;
+      if (skipReview && detection.isConfident && detection.corners.isValid) {
+        if (detection.corners.isFullFrame) {
+          // The page already fills the frame: keep the original bytes instead
+          // of re-encoding an identical image.
+          straightened = true;
+        } else {
+          try {
+            await _warpPage(index, detection.corners);
+            straightened = true;
+          } catch (error) {
+            // Leave the page uncropped and let the editor open as usual.
+            _error = _describe(error);
+          }
+        }
+      }
+
+      return CapturedPageResult(
+        index: index,
+        detection: detection,
+        straightened: straightened,
+      );
     } catch (error) {
       _error = _describe(error);
       return null;

@@ -50,9 +50,11 @@ class _LiveScanScreenState extends State<LiveScanScreen> {
 
   void _handlePageAdded(CapturedPageResult result) {
     if (!mounted) return;
-    // Every capture is reviewed before it enters the batch, whether or not the
-    // automatic detection was confident. The editor opens with the detection
-    // already applied; cancelling keeps the uncropped photo in the batch.
+    // Skip-review mode already warped a confident page, so there is nothing to
+    // confirm. Otherwise every capture is reviewed, confident or not: the
+    // editor opens with the detection applied and cancelling keeps the
+    // uncropped photo in the batch.
+    if (result.straightened) return;
     unawaited(_reviewEdges(result));
   }
 
@@ -174,6 +176,13 @@ class _LiveScanScreenState extends State<LiveScanScreen> {
           ),
         const Spacer(),
         if (widget.controller.pageCount > 0) _buildPageStrip(),
+        if (_live.error == null)
+          _ReviewModeChip(
+            skipReview: _live.skipReview,
+            onToggle: _live.isCapturing || _editing
+                ? null
+                : () => _live.setSkipReview(!_live.skipReview),
+          ),
         if (_live.error == null) _buildStatusChip(context),
         const SizedBox(height: 12),
         if (_live.error == null) _buildControls(),
@@ -286,6 +295,64 @@ class _LiveScanScreenState extends State<LiveScanScreen> {
             onTap: enabled ? _live.toggleTorch : null,
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// Toggles the fast mode used for batches of already-straight pages.
+class _ReviewModeChip extends StatelessWidget {
+  const _ReviewModeChip({required this.skipReview, required this.onToggle});
+
+  final bool skipReview;
+  final VoidCallback? onToggle;
+
+  @override
+  Widget build(BuildContext context) {
+    final enabled = onToggle != null;
+    final color = enabled ? Colors.white : Colors.white38;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
+      child: Semantics(
+        button: true,
+        toggled: skipReview,
+        label: 'Skip edge review',
+        child: Tooltip(
+          message: skipReview
+              ? 'Confident pages are saved straight away; unclear edges still open the editor.'
+              : 'Every page opens the corner editor before it is saved.',
+          child: Material(
+            color: skipReview
+                ? const Color(0xFF0F766E)
+                : Colors.black.withValues(alpha: 0.6),
+            shape: const StadiumBorder(),
+            clipBehavior: Clip.antiAlias,
+            child: InkWell(
+              onTap: onToggle,
+              child: Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 7,
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      skipReview ? Icons.bolt : Icons.fact_check_outlined,
+                      size: 16,
+                      color: color,
+                    ),
+                    const SizedBox(width: 6),
+                    Text(
+                      skipReview ? 'Skip review on' : 'Reviewing every page',
+                      style: TextStyle(color: color, fontSize: 12),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
       ),
     );
   }

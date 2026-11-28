@@ -44,6 +44,7 @@ class LiveScanController extends ChangeNotifier with WidgetsBindingObserver {
   bool _inactive = false;
   bool _autoCapture = false;
   bool _autoArmed = true;
+  bool _skipReview = false;
   bool _torch = false;
   bool _disposed = false;
 
@@ -64,6 +65,11 @@ class LiveScanController extends ChangeNotifier with WidgetsBindingObserver {
   bool get isReady => _cameraReady && (_camera?.value.isInitialized ?? false);
   bool get isCapturing => _capturing;
   bool get autoCapture => _autoCapture;
+
+  /// Fast mode: confident captures are warped during capture instead of
+  /// opening the corner editor. Unclear shots still go to the editor.
+  bool get skipReview => _skipReview;
+
   bool get torchOn => _torch;
   bool get isStreaming => _streaming;
   bool get isPaused => _paused;
@@ -189,6 +195,14 @@ class LiveScanController extends ChangeNotifier with WidgetsBindingObserver {
     _notify();
   }
 
+  /// Fast mode for batches of already-straight pages: confirmed captures are
+  /// saved without the corner editor opening.
+  void setSkipReview(bool enabled) {
+    if (_skipReview == enabled) return;
+    _skipReview = enabled;
+    _notify();
+  }
+
   Future<void> toggleTorch() async {
     final camera = _camera;
     if (camera == null || !camera.value.isInitialized) return;
@@ -206,7 +220,9 @@ class LiveScanController extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Takes a high-resolution photo (the preview stream is stopped first, which
   /// is what lets devices that share the sensor stream capture at full quality)
-  /// and adds the uncropped page to the batch for edge review.
+  /// and adds the page to the batch. Confident pages are straightened on the
+  /// spot only in [setSkipReview] mode; otherwise the page waits for the edge
+  /// editor.
   Future<CapturedPageResult?> capture() async {
     final camera = _camera;
     if (_disposed ||
@@ -224,7 +240,10 @@ class LiveScanController extends ChangeNotifier with WidgetsBindingObserver {
     try {
       await _stopStream();
       final photo = await camera.takePicture();
-      final result = await batch.addCapturedPhoto(photo.path);
+      final result = await batch.addCapturedPhoto(
+        photo.path,
+        skipReview: _skipReview,
+      );
       await services.storage.deleteQuietly(photo.path);
 
       if (result == null) {

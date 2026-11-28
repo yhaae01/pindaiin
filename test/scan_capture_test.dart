@@ -92,6 +92,41 @@ void main() {
     expect(straightened.quarterTurns, 0);
   });
 
+  test('skip review: a confident page is straightened during capture',
+      () async {
+    final source = File(p.join(root.path, 'fast.png'));
+    await source.writeAsBytes(_confidentPhoto());
+
+    final result = await controller.addCapturedPhoto(
+      source.path,
+      skipReview: true,
+    );
+
+    expect(result, isNotNull);
+    expect(result!.straightened, isTrue);
+    final page = controller.pages[result.index];
+    expect(page.imagePath, endsWith('_straight.jpg'));
+    expect(page.sourceImagePath, isNotNull);
+    expect(await File(page.imagePath).length(), greaterThan(0));
+    // The full-resolution capture is still available for later re-adjustment.
+    expect(await File(page.sourceImagePath!).length(), await source.length());
+  });
+
+  test('skip review: an unclear page still waits for the editor', () async {
+    final source = File(p.join(root.path, 'fast_broken.png'));
+    await source.writeAsBytes(Uint8List.fromList(const [1, 2, 3, 4, 5]));
+
+    final result = await controller.addCapturedPhoto(
+      source.path,
+      skipReview: true,
+    );
+
+    expect(result, isNotNull);
+    expect(result!.straightened, isFalse);
+    expect(controller.pages[result.index].sourceImagePath, isNull);
+    expect(controller.pages[result.index].imagePath, endsWith('.png'));
+  });
+
   test('a capture whose detection fails is still added for manual review',
       () async {
     final source = File(p.join(root.path, 'broken.png'));
